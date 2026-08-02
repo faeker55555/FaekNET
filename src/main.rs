@@ -164,21 +164,44 @@ fn chat(config: Config) -> io::Result<()> {
         None => log("Could not determine public IP (check internet connection)"),
     }
 
-    log(&format!(
-        "Sending to peer at {}:{}",
-        config.peer_ip, config.peer_port
-    ));
+    log(&format!("Sending to peer at {}:{}", config.peer_ip, config.peer_port));
 
     let friend_addr: SocketAddr = format!("{}:{}", config.peer_ip, config.peer_port)
         .parse()
         .expect("Invalid peer address");
 
+    // -------- Diagnostic ping sequence --------
+    log("=== Diagnostics ===");
+    log(&format!("Peer says their IP is: {}", config.peer_ip));
+    log(&format!(
+        "Your router will NAT this traffic. Make sure your router forwards \
+UDP port {} to this machine.",
+        config.my_port
+    ));
+    log("Sending 3 test pings...");
+
+    for i in 1..=3 {
+        match sock.send_to(format!("PING {} from chat", i).as_bytes(), friend_addr) {
+            Ok(n) => log(&format!("[diag] Sent ping #{} ({} bytes)", i, n)),
+            Err(e) => log(&format!("[diag] SEND FAILED on ping #{}: {}", i, e)),
+        }
+        thread::sleep(std::time::Duration::from_secs(2));
+    }
+    log("=== End diagnostics (waiting for any reply) ===");
+    // -------- End diagnostics --------
+
     let recv_sock = sock.try_clone()?;
+    let chat_sock = sock.try_clone()?;
+
+    // Set a 30-second recv timeout so the user sees feedback even if nothing arrives
+    recv_sock
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
 
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
-            match recv_sock.recv_from(&mut buf) {
+            match chat_sock.recv_from(&mut buf) {
                 Ok((len, _addr)) => {
                     let msg = String::from_utf8_lossy(&buf[..len]);
                     print!("\n[Friend] {}\n> ", msg);
@@ -192,7 +215,7 @@ fn chat(config: Config) -> io::Result<()> {
         }
     });
 
-    if let Err(e) = sock.send_to(b"Hi!", friend_addr) {
+    if let Err(e) = recv_sock.send_to(b"Hi!", friend_addr) {
         log(&format!("Failed to send initial greeting: {}", e));
     }
 
@@ -211,7 +234,7 @@ fn chat(config: Config) -> io::Result<()> {
             continue;
         }
 
-        if let Err(e) = sock.send_to(msg.as_bytes(), friend_addr) {
+        if let Err(e) = recv_sock.send_to(msg.as_bytes(), friend_addr) {
             log(&format!("Send error: {}", e));
         }
     }

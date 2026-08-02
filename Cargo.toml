@@ -1,0 +1,11 @@
+[package]
+name = "p2p-chat"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+socket2 = { version = "0.5", features = ["all"] }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+ureq = "2"

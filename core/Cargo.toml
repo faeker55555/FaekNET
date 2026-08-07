@@ -1,0 +1,14 @@
+[package]
+name = "lan_mesh_core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+socket2 = { version = "0.5", features = ["all"] }
+chrono = "0.4"
+tun-rs = "2"
+chacha20poly1305 = "0.11"
+rand = "0.9"
+base64 = "0.22"

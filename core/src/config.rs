@@ -7,6 +7,10 @@ pub const CONFIG_PATH: &str = "mesh.toml";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MeConfig {
+    /// Display name shown to peers (used when generating an `export` peer
+    /// card). Purely cosmetic.
+    #[serde(default = "default_name")]
+    pub name: String,
     /// This machine's address on the virtual LAN, e.g. "10.66.0.2"
     pub virtual_ip: Ipv4Addr,
     /// Prefix length of the virtual LAN subnet (all peers must share this), e.g. 24
@@ -23,6 +27,10 @@ pub struct MeConfig {
     /// UDP/IP + encryption overhead this tool adds around every packet.
     #[serde(default = "default_mtu")]
     pub mtu: u16,
+}
+
+fn default_name() -> String {
+    "peer".to_string()
 }
 
 fn default_prefix() -> u8 {

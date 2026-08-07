@@ -1,0 +1,13 @@
+[package]
+name = "lan_mesh_gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lan_mesh_core = { path = "../core" }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland", "__screenshot"] }
+egui = "0.31"
+
+[[bin]]
+name = "lan_mesh_gui"
+path = "src/main.rs"

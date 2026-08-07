@@ -1,0 +1,11 @@
+[package]
+name = "lan_mesh_cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lan_mesh"
+path = "src/main.rs"
+
+[dependencies]
+lan_mesh_core = { path = "../core" }

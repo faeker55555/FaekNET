@@ -1,0 +1,191 @@
+name: Build & Release
+
+# Builds lan_mesh (CLI + native GUI) for Linux and Windows.
+#
+# - Pushing a tag like "v0.2.0" builds both platforms and publishes a
+#   GitHub Release with ready-to-run .zip/.tar.gz packages attached.
+# - Every push/PR to main also builds+tests (no release) so breakage is
+#   caught immediately, without needing to cut a tag first.
+#
+# Windows note: the GUI needs Wintun (the driver WireGuard also uses) to
+# create its virtual network adapter. Rather than asking users to install
+# it separately, this workflow downloads the official wintun.net build and
+# bundles wintun.dll directly next to the .exe files in the Windows
+# package -- so the release zip works standalone, no extra driver install
+# step for end users beyond the one-time "Run as Administrator" that
+# creating any virtual adapter requires.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  WINTUN_VERSION: "0.14.1"
+
+jobs:
+  test:
+    name: Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build (debug, sanity check)
+        run: cargo build --workspace --locked
+
+  build-linux:
+    name: Build (Linux release)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux GUI build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libwayland-dev libgtk-3-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --workspace --release --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          OUT="lan_mesh-${VERSION}-linux-x86_64"
+          mkdir -p "dist/${OUT}"
+          cp target/release/lan_mesh "dist/${OUT}/"
+          cp target/release/lan_mesh_gui "dist/${OUT}/"
+          cp -r extras "dist/${OUT}/extras"
+          cp scripts/linux/*.sh "dist/${OUT}/"
+          chmod +x "dist/${OUT}"/*.sh
+          cp README.md "dist/${OUT}/" 2>/dev/null || true
+          cd dist
+          tar czf "${OUT}.tar.gz" "${OUT}"
+          sha256sum "${OUT}.tar.gz" > "${OUT}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-package
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  build-windows:
+    name: Build (Windows release, cross-compiled)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+
+      - name: Install mingw-w64 (Windows cross-linker)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+
+      - name: Configure Windows linker
+        run: |
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [target.x86_64-pc-windows-gnu]
+          linker = "x86_64-w64-mingw32-gcc"
+          ar = "x86_64-w64-mingw32-ar"
+          EOF
+
+      - name: Build release binaries for Windows
+        run: cargo build --workspace --release --locked --target x86_64-pc-windows-gnu
+
+      - name: Fetch Wintun (bundled automatically, no manual driver install for users)
+        run: |
+          set -euo pipefail
+          curl -sSL "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" -o wintun.zip
+          unzip -q wintun.zip -d wintun_extracted
+          # amd64 build matches the x86_64-pc-windows-gnu target used above.
+          test -f wintun_extracted/wintun/bin/amd64/wintun.dll
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          OUT="lan_mesh-${VERSION}-windows-x86_64"
+          mkdir -p "dist/${OUT}"
+          cp target/x86_64-pc-windows-gnu/release/lan_mesh.exe "dist/${OUT}/"
+          cp target/x86_64-pc-windows-gnu/release/lan_mesh_gui.exe "dist/${OUT}/"
+          cp wintun_extracted/wintun/bin/amd64/wintun.dll "dist/${OUT}/"
+          cp wintun_extracted/wintun/LICENSE.txt "dist/${OUT}/WINTUN_LICENSE.txt"
+          cp -r extras "dist/${OUT}/extras"
+          cp scripts/windows/*.bat "dist/${OUT}/"
+          cp README.md "dist/${OUT}/" 2>/dev/null || true
+          cd dist
+          zip -qr "${OUT}.zip" "${OUT}"
+          sha256sum "${OUT}.zip" > "${OUT}.zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: |
+            dist/*.zip
+            dist/*.sha256
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-package
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.zip
+            dist/*.zip.sha256
+          generate_release_notes: true

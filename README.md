@@ -48,40 +48,80 @@ Every peer needs:
    publicly).
 3. Each other's **public IP:port** (see the CGNAT note below).
 
-### Build
+### Get it
 
-```
-cargo build --release
-```
-The binary is at `target/release/lan_mesh`.
+**Easiest: download a release.** Every pushed git tag (`v*`) automatically
+builds and publishes ready-to-run packages for Linux and Windows via
+GitHub Actions — see [Build & Release](#build--release-pipeline) below.
+Grab the `.tar.gz` (Linux) or `.zip` (Windows) from the repo's Releases
+page, extract it, and use the `run-gui.sh`/`run-gui.bat` (or
+`run-cli.sh`/`run-cli.bat`) scripts inside — they handle
+Administrator/root elevation automatically.
 
-**Linux**: needs `CAP_NET_ADMIN` to create the virtual adapter — run with
-`sudo`.
-**Windows**: run as Administrator, and place `wintun.dll` (matching your
-CPU architecture) next to `lan_mesh.exe`. Get it from https://www.wintun.net/.
+**Or build from source:**
+```
+cargo build --workspace --release
+```
+This produces two binaries:
+- `target/release/lan_mesh` — the terminal/CLI tool (all the commands below)
+- `target/release/lan_mesh_gui` — the native GUI
+
+**Linux**: creating the virtual adapter needs `CAP_NET_ADMIN` — run with
+`sudo`, or use `scripts/linux/run-gui.sh` / `run-cli.sh`, which detect this
+and re-launch themselves elevated automatically.
+**Windows**: needs Administrator, and `wintun.dll` (get it from
+https://www.wintun.net/, matching your CPU architecture) next to the
+`.exe`. Downloaded release packages already include this; `scripts/build/build-windows-cross.sh`
+fetches it automatically if you're building from source. The
+`scripts/windows/run-gui.bat` / `run-cli.bat` wrappers handle the UAC
+elevation prompt for you.
 
 ### First-time setup (do this on every machine)
 
 ```
 ./lan_mesh init
 ```
-This interactively asks for your virtual IP, subnet prefix, listen port,
-and the pre-shared key. **The first person in the group** should leave the
-PSK prompt empty to generate a new one, then share the printed key with
-everyone else, who paste it in when they run `init`.
+This interactively asks for your display name, virtual IP, subnet prefix,
+listen port, and the pre-shared key. **The first person in the group**
+should leave the PSK prompt empty to generate a new one, then share the
+printed key with everyone else, who paste it in when they run `init`.
 
-### Find your public address to share with peers
+### The fast way to connect two people: `export` / `import`
+
+```
+./lan_mesh export
+```
+This discovers your external `ip:port` via STUN and prints **one single
+line** encoding your name, virtual IP, and public address. Send that exact
+line to your friend (Discord, chat, whatever). They run:
+
+```
+./lan_mesh import <the line you sent them>
+```
+
+...and you're added as a peer on their end — no manual typing of IPs/ports.
+Do the same in reverse (they `export`, you `import`) so you're peers with
+each other. Repeat pairwise for every relationship in the group (see "Does
+everyone need everyone" below).
+
+This card only encodes your name/virtual-IP/public-address — it does
+**not** include the pre-shared key, so it's safe to paste in a group chat;
+the key still needs to be shared separately once per group, exactly as in
+`init` above.
+
+### Alternative: fully manual `add-peer`
+
+If you'd rather type things in by hand (e.g. no internet access to reach a
+STUN server, or you already know each other's IP:port from another
+source):
 
 ```
 ./lan_mesh myaddr
 ```
-This uses STUN (the same technique we used earlier to diagnose your CGNAT
-issue) to discover your external `ip:port` for the port this mesh will
-listen on. If different STUN servers report *different* ports, your NAT
-is doing endpoint-dependent (symmetric-like) mapping and direct P2P may
-not work reliably for you — see "Known limitations" below.
-
-### Add each peer
+Discovers your external `ip:port` via STUN and prints it for you to relay
+manually. If different STUN servers report *different* ports, your NAT is
+doing endpoint-dependent (symmetric-like) mapping and direct P2P may not
+work reliably for you — see "Known limitations" below.
 
 ```
 ./lan_mesh add-peer
@@ -89,6 +129,18 @@ not work reliably for you — see "Known limitations" below.
 Asks for the peer's name, their virtual IP (what they chose in their own
 `init`), and their public `ip:port` (from their `myaddr`). Repeat for each
 peer. Run `./lan_mesh list-peers` any time to review.
+
+### Check connectivity/latency to your peers
+
+```
+./lan_mesh ping
+```
+Sends a handful of encrypted probes to every configured peer over the real
+mesh transport and reports round-trip time and packet loss per peer — like
+a normal `ping`, but specifically measuring the mesh link itself. Doesn't
+need root/Administrator, and works even without `lan_mesh run` active
+(though a peer obviously can't answer if their mesh isn't running). Pass a
+number to change the probe count, e.g. `./lan_mesh ping 20`.
 
 ### Run the mesh
 
@@ -107,6 +159,96 @@ on your machine — LAN game software that scans/broadcasts on your local
 subnets should find peers running the mesh automatically. If a game asks
 you to type in a host IP directly, use the peer's virtual IP.
 
+### If TCP-based things (Minecraft, a hosted website, etc.) don't connect
+
+UDP-heavy games (Mindustry, Factorio) often work immediately, while a
+TCP-based server (Minecraft Java, a web server, etc.) times out even
+though the mesh itself is fine. This is almost always a **host-side
+firewall dropping new inbound connections on the virtual adapter**, not a
+mesh bug — Linux firewalls (`ufw`/`iptables`/`nftables`) apply their
+default-deny policy to *every* interface, including the mesh's virtual
+one, unless told otherwise. Confirm with `sudo tcpdump -ni lanmesh0 -n
+tcp` while a peer tries to connect: if you see their `SYN` arrive
+repeatedly with no reply, that's the firewall silently eating it. Fix:
+
+```
+sudo ufw allow in on lanmesh0
+```
+(substitute your actual adapter name, check with `ip addr show`; if you
+set `LAN_MESH_DEV_NAME` it'll be that instead of `lanmesh0`). This is a
+one-time, permanent fix that covers every port and protocol on the mesh
+interface, since anything reaching it already passed ChaCha20-Poly1305
+authentication against your shared key.
+
+## Bonus: a self-hosted Discord-styled text + voice channel over the mesh
+
+Since the mesh carries arbitrary TCP (proven above), `extras/messenger.py`
+(plus `extras/frontend.py` and `extras/emoji_data.json`, which it needs
+alongside it) is a small group chat with a single text channel and a
+single voice channel, laid out like Discord (channel sidebar, chat, member
+list, bottom-left user bar), built on nothing but the Python 3 standard
+library (no pip installs, ever). This project has no affiliation with
+Discord; it doesn't use Discord's logo, brand colors, wordmark, or
+proprietary Twemoji-style emoji artwork -- only a similar structural
+layout and the standard Unicode emoji characters (rendered by your
+OS/browser's own emoji font).
+
+```
+python3 extras/messenger.py --host 10.66.0.1 --port 8765
+```
+(use your own virtual IP; omit `--host` to bind `0.0.0.0`). On first run
+it generates a self-signed TLS certificate and serves over **HTTPS**
+(`--no-tls` forces plain HTTP if you don't need voice). Peers open
+`https://10.66.0.1:8765/` — the browser will show a one-time "not
+trusted" warning for the self-signed cert; click Advanced → Proceed, this
+is expected. HTTPS is required here purely because **browsers only allow
+microphone access on a secure origin** (HTTPS, or literally `localhost`);
+your actual traffic confidentiality still comes from the mesh's own
+ChaCha20-Poly1305 encryption underneath, not from this certificate.
+
+Features:
+- **Lightweight accounts**: register a username + password (or "continue
+  as a guest, no account" for a one-off session). Since everyone who can
+  reach the server already has your mesh's shared key, an account here is
+  *not* an access-control boundary against strangers — it's a persistent
+  identity (your name, avatar color, and settings follow you across
+  sessions/devices) so people can't casually post as you. Passwords are
+  salted + hashed (PBKDF2-HMAC-SHA256) before being stored, never in
+  plaintext, in `extras/messenger_accounts.json`.
+- **Settings** (gear icon, bottom-left): choose Voice Activity vs.
+  Push-to-Talk, set your PTT key (click the key field, then press any key
+  to bind it), and adjust input/output volume. Settings are saved per
+  account and re-applied automatically next time you log in; guests keep
+  settings only for the current session.
+- **Push-to-talk**: when enabled, hold your bound key to transmit — your
+  mic is silent otherwise. Works alongside or instead of the default
+  voice-activity mode.
+- **Text channel** with message history (persisted to
+  `extras/messenger_history.jsonl`, survives restarts), a live typing
+  indicator, and reactions using the full emoji picker below (click "+ 😀"
+  under any message).
+- **Full standard Unicode emoji set** (1,900+ emoji) in a Discord-style
+  categorized picker with search and category tabs (😀🖐️🐻🍔✈️⚽💡❤️🏳️),
+  available both in the message composer and for reactions.
+- **GIF/image support**: paste or type a link ending in
+  `.gif/.png/.jpg/.webp` and it auto-embeds inline; or drag-and-drop /
+  paste-from-clipboard / use the ➕ button to upload an image or GIF file
+  directly (saved under `extras/messenger_uploads/`). There's no built-in
+  GIF search box — that would require calling a third-party API
+  (Tenor/Giphy), which breaks the "no external services" design of this
+  whole project — so find a GIF elsewhere and paste/upload it here.
+- **Member list sidebar** showing who's online, who's in voice, and a live
+  "speaking" highlight, plus an inline mini-list under the voice channel
+  entry itself (just like Discord).
+- **Voice channel**: click the voice channel entry or the mic icon in your
+  user bar to join; a separate mute button toggles muting (disabled/hidden
+  behavior when push-to-talk is active, since PTT controls transmission
+  instead). Audio is relayed through the server as raw 16kHz mono PCM over
+  a hand-rolled WebSocket (no external STUN/TURN/WebRTC-signaling service
+  involved, consistent with the rest of lan_mesh) — quality is modest by
+  design, to leave bandwidth for whatever game you're also playing over
+  the same mesh link.
+
 ## Notable design points
 
 - **Roaming / self-healing addresses**: every encrypted packet embeds the
@@ -119,13 +261,105 @@ you to type in a host IP directly, use the peer's virtual IP.
 - **Encryption**: ChaCha20-Poly1305 AEAD with a 12-byte random nonce per
   packet. Wrong-key or tampered packets are silently dropped (verified in
   automated tests) rather than crashing anything.
-- **Keepalives**: sent every 15s per peer to prevent idle NAT/CGNAT UDP
-  mappings from expiring — directly addressing the same class of bug we
-  found and fixed in the earlier chat program (the receive loop here
-  likewise treats socket read-timeouts as "nothing yet", not a fatal
-  error).
+- **Keepalives double as latency probes**: every 15s per peer, a PING is
+  sent (not a bare keepalive) — it refreshes NAT/CGNAT mappings exactly
+  like a keepalive would, but also gets echoed back as a PONG so `run`'s
+  periodic status log shows a live `~Nms` round-trip reading per peer, and
+  `lan_mesh ping` can measure it on demand. The receive loop treats socket
+  read-timeouts as "nothing yet", not a fatal error — directly addressing
+  the same class of bug we found and fixed in the earlier chat program.
+- **Address roaming is persisted to disk**: the first time a peer's
+  observed address changes (including the very first packet from them),
+  it's written back into `mesh.toml` immediately, not just kept in memory.
+  So after a successful connection, restarting `lan_mesh run` starts
+  "warm" with the last-known-good address instead of the possibly-stale
+  one from `export`/`add-peer`.
+- **`export`/`import` peer cards**: a single base64 line encoding name +
+  virtual IP + public ip:port (not the PSK). Turns adding a peer into
+  "run one command, paste the result, they run one command" instead of
+  five separate manual prompts.
+
+## Does everyone need everyone? (mesh topology)
+
+No, not anymore. **Peers gossip their known peer table to each other**
+(name, virtual IP, best-known address, freshness) every ~20 seconds, and
+immediately whenever a peer's own address changes. If A knows C, and C
+knows B, then within one gossip cycle A automatically learns about B,
+starts hole-punching to it directly, and vice versa — no manual
+`export`/`import` needed for that pair. You only need **one** initial
+bootstrap connection into an existing mesh; everyone else is discovered
+automatically after that (this is what makes it behave like a real
+self-propagating subnet rather than a fixed peer list). This also means
+if your NAT/CGNAT reassigns you a new external port on reconnect (a full
+cone NAT that swaps ports every time, for example), the mesh self-heals:
+your own background self-STUN check notices the change and re-gossips
+your new address immediately, so peers pick it up without you doing
+anything.
+
+## The native GUI
+
+`lan_mesh_gui` is a standalone, cross-platform desktop app (Linux +
+Windows) built with [`egui`/`eframe`](https://github.com/emilk/egui) —
+not a web view, not Electron, no browser involved. It has its own visual
+identity (dark, monospace, sharp-edged "network operations console"
+look), deliberately distinct from chat-app UI conventions.
+
+Screens: a first-run setup wizard (identity + optional bootstrap-peer
+import), a network overview with a live topology diagram (solid lines for
+manually-added peers, dashed for gossip-auto-discovered ones), a
+peers list with per-peer latency/status/discovery-method detail, a live
+activity log streaming the mesh engine's own log lines, and settings
+(pre-shared key, "my peer card" generator, identity info).
+
+It uses the exact same `lan_mesh_core` engine as the CLI — same gossip,
+same encryption, same config file (`mesh.toml`) — so you can mix and
+match: set up with the CLI, monitor with the GUI, or vice versa.
+
+## Build & Release Pipeline
+
+This repo includes a GitHub Actions workflow
+(`.github/workflows/release.yml`) that:
+- Runs on every push/PR to `main`: builds the whole workspace and runs
+  the test suite, so breakage is caught immediately.
+- Runs on every pushed tag matching `v*` (e.g. `v0.2.0`): additionally
+  builds release binaries for **both Linux and Windows** (Windows is
+  cross-compiled from the Linux runner using `mingw-w64` — no Windows
+  runner needed), automatically downloads and bundles the correct
+  `wintun.dll` into the Windows package, assembles both into ready-to-run
+  `.tar.gz`/`.zip` archives (binaries + the `run-*.sh`/`run-*.bat` helper
+  scripts + `extras/`), and publishes them as a GitHub Release with
+  checksums.
+
+To cut a release: `git tag v0.2.0 && git push --tags`. That's it — the
+workflow does the rest and the Release page gets populated automatically.
+
+### Building locally (without CI)
+
+```
+./scripts/build/build-linux.sh          # native Linux build
+./scripts/build/build-windows-cross.sh  # cross-compile for Windows from Linux
+```
+Both scripts produce the same package layout CI does, under `dist/`.
+`build-windows-cross.sh` needs the Windows Rust target and mingw-w64:
+```
+rustup target add x86_64-pc-windows-gnu
+sudo apt-get install -y mingw-w64
+```
+(On an actual Windows machine, just `cargo build --workspace --release`
+directly works too — you'd only need to grab `wintun.dll` yourself from
+wintun.net in that case, since the automated fetch step lives in the
+Linux-hosted build scripts.)
+
+### Helper scripts (included in every release package)
+
+| Script | What it does |
+|---|---|
+| `run-gui.sh` / `run-gui.bat` | Launches the GUI, auto-elevating (sudo/UAC) since creating the virtual adapter needs it |
+| `run-cli.sh` / `run-cli.bat` | Runs the CLI with any arguments, auto-elevating only for `run` |
+| `allow-firewall.sh` / `allow-firewall.bat` | One-time fix for the "TCP apps like Minecraft don't connect" issue described above — opens the local firewall for the mesh's virtual interface (Linux) or the lan_mesh executables (Windows) |
 
 ## Known limitations
+
 
 - **Symmetric/endpoint-dependent NAT on both sides is unfixable by this
   tool alone.** If `myaddr` shows different ports per STUN server for you

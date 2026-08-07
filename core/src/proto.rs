@@ -1,7 +1,22 @@
 use std::net::Ipv4Addr;
 
 pub const TYPE_DATA: u8 = 1;
+/// No longer sent by this version (TYPE_PING now doubles as the keepalive,
+/// since it additionally yields an RTT measurement) but kept as a reserved
+/// value, and still handled harmlessly on receipt for compatibility with
+/// older builds.
+#[allow(dead_code)]
 pub const TYPE_KEEPALIVE: u8 = 2;
+/// Latency probe: payload carries an 8-byte big-endian nonce/sequence id
+/// that the receiver echoes back unchanged in a TYPE_PONG. Used by the
+/// `ping` CLI command; unrelated to keepalives (which carry no payload and
+/// aren't echoed).
+pub const TYPE_PING: u8 = 3;
+pub const TYPE_PONG: u8 = 4;
+/// Carries a gossip::build_payloads() chunk describing peers the sender
+/// knows about (name, virtual IP, best-known address, freshness). See
+/// gossip.rs for the wire format of the payload itself.
+pub const TYPE_GOSSIP: u8 = 5;
 
 /// Plaintext wire format (this is what gets AEAD-encrypted as a whole):
 ///   byte 0       : packet type (TYPE_DATA / TYPE_KEEPALIVE)

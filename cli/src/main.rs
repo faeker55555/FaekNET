@@ -1,13 +1,9 @@
-mod config;
-mod crypto;
-mod mesh;
-mod peer;
-mod proto;
-mod stun;
+use lan_mesh_core::{config, crypto, mesh, share, stun};
 
 use config::{Config, MeConfig, PeerConfig};
 use std::io::{self, BufRead, Write};
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 fn prompt(msg: &str) -> String {
     print!("{}", msg);
@@ -33,13 +29,28 @@ fn print_usage() {
 Usage:
   lan_mesh init            Interactive first-time setup (creates mesh.toml)
   lan_mesh add-peer        Interactively add a peer to mesh.toml
+  lan_mesh export          Print a one-line peer card to send to a friend
+                           (they run `lan_mesh import <the line>`)
+  lan_mesh import <card>   Add a peer from a card produced by their `export`
   lan_mesh list-peers      Show configured peers and their reachability
   lan_mesh myaddr          Discover your own external ip:port via STUN
-                           (share this with peers so they can add you)
+                           (only needed if NOT using export/import)
+  lan_mesh ping [N]        Measure round-trip latency to every peer over
+                           the mesh transport (N probes, default 5). Does
+                           NOT need root/Administrator.
   lan_mesh run             Start the mesh (creates the virtual adapter,
                            needs root/Administrator)
   lan_mesh genkey          Generate a fresh pre-shared key to share with
                            everyone in your mesh
+
+Quickest way to connect with a friend:
+  1. Both run `lan_mesh init` (one of you leaves the PSK prompt empty to
+     generate a new key, and sends that exact key to the other over chat/
+     voice -- do this once per group, never post it publicly).
+  2. Both run `lan_mesh export`, and send each other the single printed
+     line.
+  3. Both run `lan_mesh import <the line your friend sent you>`.
+  4. Both run `lan_mesh run`.
 "
     );
 }
@@ -61,6 +72,8 @@ fn cmd_init() {
         "Everyone in your mesh must use the SAME virtual subnet and the SAME\n\
          pre-shared key, but a DIFFERENT virtual IP within that subnet.\n"
     );
+
+    let name = prompt_with_default("Your display name (shown to peers)", "player");
 
     let virtual_ip_str = prompt_with_default("Your virtual LAN IP", "10.66.0.1");
     let virtual_ip: Ipv4Addr = match virtual_ip_str.parse() {
@@ -99,6 +112,7 @@ fn cmd_init() {
 
     let cfg = Config {
         me: MeConfig {
+            name,
             virtual_ip,
             prefix,
             listen_port,
@@ -109,8 +123,8 @@ fn cmd_init() {
     };
     cfg.save().expect("failed to write mesh.toml");
     println!("\nSaved {}.", config::CONFIG_PATH);
-    println!("Next: run `lan_mesh myaddr` to find your external ip:port to share with peers,");
-    println!("then have each peer run `lan_mesh add-peer` to add you (and vice versa).");
+    println!("Next: run `lan_mesh export`, send the printed line to a friend, and have them");
+    println!("run `lan_mesh import <that line>` (and vice versa) to connect.");
 }
 
 fn cmd_add_peer() {
@@ -153,6 +167,77 @@ fn cmd_add_peer() {
     });
     cfg.save().expect("failed to write mesh.toml");
     println!("Peer added. Run `lan_mesh list-peers` to review, `lan_mesh run` to start the mesh.");
+}
+
+fn cmd_export() {
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    println!(
+        "Discovering your external ip:port via STUN (local port {})...",
+        cfg.me.listen_port
+    );
+    let Some(addr) = stun::discover_external_addr_any(cfg.me.listen_port) else {
+        eprintln!(
+            "Could not reach any STUN server -- check your internet connection, \
+or run `lan_mesh myaddr` for more detail."
+        );
+        return;
+    };
+    let card = share::encode(&cfg.me.name, cfg.me.virtual_ip, &addr.ip().to_string(), addr.port());
+    println!("\nSend this exact line to your friend (they run `lan_mesh import <line>`):\n");
+    println!("{card}\n");
+    println!(
+        "(Reminder: they also need your shared pre-shared key, sent separately, \
+if they don't already have it.)"
+    );
+}
+
+fn cmd_import(card: &str) {
+    let mut cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    let peer = match share::decode(card) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Could not import peer card: {e}");
+            return;
+        }
+    };
+    if peer.virtual_ip == cfg.me.virtual_ip {
+        eprintln!("That card's virtual IP is the same as yours -- refusing to add yourself.");
+        return;
+    }
+    if let Some(existing) = cfg.peers.iter_mut().find(|p| p.virtual_ip == peer.virtual_ip) {
+        *existing = peer.clone();
+        println!("Updated existing peer '{}' ({}).", peer.name, peer.virtual_ip);
+    } else {
+        println!("Added peer '{}' ({}).", peer.name, peer.virtual_ip);
+        cfg.peers.push(peer);
+    }
+    cfg.save().expect("failed to write mesh.toml");
+    println!("Run `lan_mesh list-peers` to review, `lan_mesh run` to start the mesh.");
+}
+
+fn cmd_ping(count: u32) {
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    if let Err(e) = mesh::ping(cfg, count, Duration::from_secs(2)) {
+        eprintln!("Error: {e}");
+    }
 }
 
 fn cmd_list_peers() {
@@ -243,8 +328,17 @@ fn main() {
     match args.get(1).map(|s| s.as_str()) {
         Some("init") => cmd_init(),
         Some("add-peer") => cmd_add_peer(),
+        Some("export") => cmd_export(),
+        Some("import") => match args.get(2) {
+            Some(card) => cmd_import(card),
+            None => eprintln!("Usage: lan_mesh import <card>"),
+        },
         Some("list-peers") => cmd_list_peers(),
         Some("myaddr") => cmd_myaddr(),
+        Some("ping") => {
+            let count: u32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+            cmd_ping(count);
+        }
         Some("genkey") => cmd_genkey(),
         Some("run") => cmd_run(),
         _ => print_usage(),

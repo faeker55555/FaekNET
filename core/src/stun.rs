@@ -92,6 +92,40 @@ pub fn discover_external_addr(local_port: u16, server_host: &str, server_port: u
     parse_response(&buf[..n], &tx_id)
 }
 
+/// Generates a fresh random transaction ID and the raw request bytes to
+/// send for it. Callers that need to reuse an already-bound/in-use socket
+/// (e.g. the mesh's own listen-port socket, which must be the one that
+/// actually gets STUN-probed so the discovered mapping is the one peers
+/// need to use) send this themselves via `sock.send_to`, and separately
+/// hand any inbound response bytes to `try_parse_response_for` -- see
+/// mesh.rs's periodic re-discovery logic and its STUN-response hijack in
+/// the main receive loop for why this can't just call `recv_from` itself
+/// (that socket already has its own dedicated receive thread).
+pub fn new_transaction() -> ([u8; 12], [u8; 20]) {
+    let mut tx_id = [0u8; 12];
+    rand::Rng::fill(&mut rand::rng(), &mut tx_id);
+    let req = build_request(&tx_id);
+    (tx_id, req)
+}
+
+/// Quick, cheap check for whether `data` even has the shape of a STUN
+/// message (magic cookie in the right place) before bothering to try a
+/// full parse. Used by the mesh's receive loop to decide, for each inbound
+/// UDP datagram, whether it might be a STUN response it's waiting on
+/// rather than encrypted mesh traffic -- real mesh packets (ciphertext)
+/// will essentially never collide with this by chance.
+pub fn looks_like_stun_message(data: &[u8]) -> bool {
+    data.len() >= 8 && u32::from_be_bytes([data[4], data[5], data[6], data[7]]) == MAGIC_COOKIE
+}
+
+/// Parses `data` as a STUN binding response, only accepting it if its
+/// transaction ID matches `tx_id`. Thin public wrapper around the internal
+/// parser, for use by mesh.rs when it intercepts a candidate STUN response
+/// from the shared listen-port socket.
+pub fn try_parse_response_for(data: &[u8], tx_id: &[u8; 12]) -> Option<SocketAddr> {
+    parse_response(data, tx_id)
+}
+
 /// Tries several well-known STUN servers and returns the first successful
 /// result.
 #[allow(dead_code)]

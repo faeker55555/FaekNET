@@ -1,4 +1,4 @@
-use lan_mesh_core::{config, crypto, mesh, share, stun};
+use lan_mesh_core::{config, crypto, hosts, mesh, share, stun};
 
 use config::{Config, MeConfig, PeerConfig};
 use std::io::{self, BufRead, Write};
@@ -42,6 +42,8 @@ Usage:
                            needs root/Administrator)
   lan_mesh genkey          Generate a fresh pre-shared key to share with
                            everyone in your mesh
+  lan_mesh domains         Show the local mesh domain name (<name>.<suffix>)
+                           for yourself and every configured peer
 
 Quickest way to connect with a friend:
   1. Both run `lan_mesh init` (one of you leaves the PSK prompt empty to
@@ -110,6 +112,11 @@ fn cmd_init() {
         println!("That doesn't look like a valid key (expected 32 bytes, base64-encoded). Try again.");
     };
 
+    let domain_suffix = prompt_with_default(
+        "Local domain suffix (peers become reachable as <name>.<suffix>)",
+        "mesh",
+    );
+
     let cfg = Config {
         me: MeConfig {
             name,
@@ -118,6 +125,11 @@ fn cmd_init() {
             listen_port,
             psk,
             mtu: 1400,
+            domain_suffix,
+            sync_hosts_file: true,
+            dns_server: false,
+            dns_port: 53,
+            dns_auto_configure: false,
         },
         peers: Vec::new(),
     };
@@ -309,6 +321,45 @@ fn cmd_genkey() {
     println!("{}", crypto::Cipher::generate_psk_b64());
 }
 
+fn cmd_domains() {
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    let mut raw: Vec<(String, Ipv4Addr)> = vec![(cfg.me.name.clone(), cfg.me.virtual_ip)];
+    for p in &cfg.peers {
+        raw.push((p.name.clone(), p.virtual_ip));
+    }
+    let entries = hosts::build_entries(&cfg.me.domain_suffix, &raw);
+    println!("Local mesh domain names (suffix: '{}'):\n", cfg.me.domain_suffix);
+    for e in &entries {
+        println!("  {:<28} -> {}", e.hostname, e.virtual_ip);
+    }
+    println!();
+    if cfg.me.sync_hosts_file {
+        println!(
+            "Hosts-file sync is ENABLED -- these names already work in any app on this \
+             machine while `lan_mesh run` is active (managed block in {}).",
+            hosts::hosts_file_path().display()
+        );
+    } else {
+        println!("Hosts-file sync is DISABLED in mesh.toml (sync_hosts_file = false).");
+    }
+    if cfg.me.dns_server {
+        println!(
+            "Built-in DNS resolver is ENABLED on 127.0.0.1:{} -- point a device's DNS \
+             settings at this machine's LAN/mesh IP to resolve these names from other \
+             devices too, not just this one.",
+            cfg.me.dns_port
+        );
+    } else {
+        println!("Built-in DNS resolver is DISABLED in mesh.toml (dns_server = false).");
+    }
+}
+
 fn cmd_run() {
     let cfg = match Config::load() {
         Ok(c) => c,
@@ -340,6 +391,7 @@ fn main() {
             cmd_ping(count);
         }
         Some("genkey") => cmd_genkey(),
+        Some("domains") => cmd_domains(),
         Some("run") => cmd_run(),
         _ => print_usage(),
     }

@@ -1,0 +1,33 @@
+[package]
+name = "lan_mesh_browser"
+version = "0.1.0"
+edition = "2021"
+
+# In-app browser: a small standalone window (own process, launched by the
+# main GUI) built on a real embedded webview -- WebView2 on Windows,
+# WebKitGTK on Linux -- rather than a hand-rolled renderer, so mesh-hosted
+# web UIs (game server admin panels, Plex/Jellyfin, self-hosted dashboards,
+# etc.) just work like they would in a normal browser.
+#
+# It's a separate binary/process from lan_mesh_gui rather than a widget
+# embedded directly inside egui's own window for a concrete technical
+# reason: both `eframe` (winit) and `wry`'s windowing needs each want to
+# own an OS event loop on the calling thread, and running two full GUI
+# toolkits' event loops in one process is exactly the kind of fragile,
+# platform-dependent territory (especially mixing GTK's main loop with
+# winit on Linux) that isn't worth the risk for what's meant to be a
+# convenience feature. Launching it as its own top-level window keeps
+# each toolkit in its own process, at the cost of it being a separate
+# window rather than a docked panel -- still "in-app" in the sense that
+# it's part of the same application suite, has its own matching visual
+# identity, and is opened directly from the mesh GUI with one click.
+[dependencies]
+lan_mesh_core = { path = "../core" }
+wry = "0.48"
+tao = "0.31"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "lan_mesh_browser"
+path = "src/main.rs"

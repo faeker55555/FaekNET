@@ -6,7 +6,9 @@
 
 pub mod config;
 pub mod crypto;
+pub mod dns;
 pub mod gossip;
+pub mod hosts;
 pub mod logsink;
 pub mod mesh;
 pub mod peer;

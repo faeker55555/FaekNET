@@ -29,6 +29,7 @@ pub fn install_log_sink(buffer: LogBuffer) {
 pub enum Screen {
     Network,
     Peers,
+    Domains,
     Log,
     Settings,
 }
@@ -68,6 +69,7 @@ pub struct SetupForm {
     pub listen_port: String,
     pub psk_input: String,
     pub generated_psk: Option<String>,
+    pub domain_suffix: String,
     pub error: Option<String>,
 }
 
@@ -80,6 +82,7 @@ impl Default for SetupForm {
             listen_port: "54321".to_string(),
             psk_input: String::new(),
             generated_psk: None,
+            domain_suffix: "mesh".to_string(),
             error: None,
         }
     }

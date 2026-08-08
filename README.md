@@ -278,6 +278,18 @@ Features:
   virtual IP + public ip:port (not the PSK). Turns adding a peer into
   "run one command, paste the result, they run one command" instead of
   five separate manual prompts.
+- **One-sided adds just work**: if your friend adds your address but you
+  never add theirs (or vice versa), the mesh used to be a dead end in
+  that direction — their PING packets would physically arrive at your
+  machine but get silently dropped, since your peer table didn't
+  recognize the sender. Now, an unsolicited-but-authenticated PING from a
+  virtual IP you've never configured is treated as a valid introduction
+  (the packet already passed ChaCha20-Poly1305 authentication against
+  your shared key, the same trust bar gossip-discovered peers are held
+  to) — you add them under a placeholder name, start replying, and their
+  real name arrives via gossip shortly after. Still add both directions
+  when you can; this exists so a mistake or a one-off "just give them my
+  card" doesn't permanently break connectivity.
 
 ## Does everyone need everyone? (mesh topology)
 
@@ -314,6 +326,74 @@ activity log streaming the mesh engine's own log lines, and settings
 It uses the exact same `lan_mesh_core` engine as the CLI — same gossip,
 same encryption, same config file (`mesh.toml`) — so you can mix and
 match: set up with the CLI, monitor with the GUI, or vice versa.
+
+A sixth screen, **Domains**, lists every peer's local domain name and
+launches the in-app browser — see the next two sections.
+
+## Local domain names
+
+Every peer is reachable by name, not just by its raw virtual IP: with the
+default suffix `mesh`, a peer named `alice` is reachable as `alice.mesh`
+from any application on the machine — a browser, a game's "connect by
+hostname" box, `ping`, `curl`, anything. This is purely local to your
+mesh; it has nothing to do with the real internet's DNS.
+
+Two independent mechanisms provide this, both configurable per-machine in
+`mesh.toml`:
+
+- **Hosts-file sync** (`sync_hosts_file`, on by default) — the mesh keeps
+  a clearly-marked, auto-managed block inside the OS hosts file
+  (`/etc/hosts` on Linux, `System32\drivers\etc\hosts` on Windows) up to
+  date with every known peer's name → virtual IP mapping, rewriting only
+  its own block on every change (new peer discovered, address roamed,
+  etc.) and leaving the rest of the file untouched. This needs no extra
+  privilege beyond what creating the virtual adapter already requires,
+  and works with literally every application unconditionally. The block
+  is removed automatically when the mesh stops.
+- **Built-in DNS resolver** (`dns_server`, off by default) — a tiny DNS
+  server bound to `127.0.0.1:<dns_port>` (default port 53) that answers
+  `*.<suffix>` queries directly from the live peer table and forwards
+  everything else upstream to a real resolver (so normal internet
+  browsing isn't affected). This is the heavier-weight option: it needs
+  the OS/network stack to actually be pointed at it (an optional
+  best-effort `dns_auto_configure` setting attempts this — on Linux it
+  edits `/etc/resolv.conf`; on Windows it runs `netsh interface ip set
+  dns` against the real interface, skipping VPN/WARP-style adapters the
+  same way the WARP workaround below does) but supports resolving mesh
+  names from *other* devices on your LAN too, not just this machine.
+
+Use `lan_mesh domains` (CLI) or the **Domains** screen (GUI) to see the
+current name list and which mechanisms are active.
+
+## In-app browser
+
+A standalone browser window (`lan_mesh_browser`, its own executable) for
+viewing anything a peer hosts on the mesh — a game server's web admin
+panel, Plex/Jellyfin, a self-hosted dashboard, whatever. It's a real
+embedded webview (WebView2 on Windows, WebKitGTK on Linux), not a
+hand-rolled renderer, so actual modern sites work correctly — with its
+own address bar, back/forward/reload/home controls, and a visual identity
+that matches the main GUI's dark "ops console" look (while still being
+visually distinct from any particular browser or the bonus messenger's
+Discord-styled UI).
+
+It runs as a **separate process** from the main GUI rather than a panel
+embedded inside its window — both `eframe` (winit) and `wry`'s
+windowing each want to own an OS event loop on the calling thread, and
+running two full GUI toolkits' event loops in one process (especially
+mixing GTK's main loop with winit on Linux) is fragile, platform-specific
+territory not worth the risk for a convenience feature. "In-app" here
+means: part of the same application suite, opened with one click from
+the GUI's Domains screen, sharing the mesh's `mesh.toml` to build a
+"mesh home page" of clickable shortcuts to every peer.
+
+Launch it:
+- From the GUI: **Domains** screen → **OPEN IN BROWSER** next to any
+  peer, or **OPEN BROWSER (MESH HOME)** for the shortcut page.
+- Standalone: `./lan_mesh_browser [address]` (or the bundled
+  `run-browser.sh` / `run-browser.bat`, which — unlike the GUI/CLI
+  scripts — do **not** need root/Administrator, since the browser never
+  touches the virtual adapter).
 
 ## Build & Release Pipeline
 
@@ -356,10 +436,49 @@ Linux-hosted build scripts.)
 |---|---|
 | `run-gui.sh` / `run-gui.bat` | Launches the GUI, auto-elevating (sudo/UAC) since creating the virtual adapter needs it |
 | `run-cli.sh` / `run-cli.bat` | Runs the CLI with any arguments, auto-elevating only for `run` |
+| `run-browser.sh` / `run-browser.bat` | Launches the in-app browser standalone, with an optional address argument. Does **not** need root/Administrator. |
 | `allow-firewall.sh` / `allow-firewall.bat` | One-time fix for the "TCP apps like Minecraft don't connect" issue described above — opens the local firewall for the mesh's virtual interface (Linux) or the lan_mesh executables (Windows) |
 
-## Known limitations
+## Working around always-on VPNs (Cloudflare WARP, etc.)
 
+If you run Cloudflare WARP (or a similar always-on VPN/proxy client)
+alongside the mesh, it rewrites your OS's routing table so that, by
+default, *all* outbound traffic — including the mesh's own UDP socket
+doing self-STUN address discovery — gets routed through the VPN's virtual
+adapter. Left unhandled, this means the mesh reports the VPN's address as
+"yours" instead of your real internet-facing address, breaking hole
+punching. Telling WARP itself to exclude the mesh's traffic isn't a
+reliable general fix: WARP's Linux/macOS CLI (`warp-cli`) supports
+scriptable per-route exclusions, but its **Windows GUI client does not
+expose an equivalent option**, so a fix that only works via `warp-cli`
+would silently fail for Windows users.
+
+Instead, the mesh routes around this at the socket level on both
+platforms, the same way it already avoids picking up an unexpected
+interface from its own virtual TUN adapter:
+
+- **Linux**: pins the mesh's UDP socket to the real default-route
+  interface via `SO_BINDTODEVICE`, explicitly skipping any interface
+  named `CloudflareWARP`.
+- **Windows**: enumerates network adapters, skips any whose driver
+  description matches a known VPN/tunnel pattern (Cloudflare WARP's is
+  literally `"Cloudflare WARP Interface Tunnel"`, matched
+  case-insensitively, alongside a few other common VPN clients), and
+  pins the socket to the first remaining physical adapter with an IPv4
+  address via the `IP_UNICAST_IF` socket option — the direct Winsock
+  equivalent of Linux's `SO_BINDTODEVICE`.
+
+This is implemented and cross-compiles cleanly for Windows, and the
+underlying Linux mechanism (same technique, same "skip CloudflareWARP by
+name" logic) has been running correctly in this project since earlier
+in its life. The Windows-specific code path, however, has **not been
+runtime-tested on an actual Windows machine with WARP installed** — there
+wasn't one available while building this. If it needs a fix once you
+try it for real (e.g. a different adapter description string on your
+WARP version, or multiple physical NICs needing better ranking than
+"first match wins"), tell me what you see and it's a quick follow-up.
+
+## Known limitations
 
 - **Symmetric/endpoint-dependent NAT on both sides is unfixable by this
   tool alone.** If `myaddr` shows different ports per STUN server for you
@@ -372,9 +491,10 @@ Linux-hosted build scripts.)
   no VPN/relay services" per your request — if direct P2P fails for a
   given pair, the mesh will not silently route around it.
 - **IPv4 only.** IPv6 game traffic isn't handled.
-- **No automatic peer discovery.** Adding a peer is a manual, one-time
-  step per relationship (like adding a Wi-Fi password), by design.
-- Tested so far on Linux; the Windows path relies on `tun-rs`'s
-  documented Wintun support but hasn't been verified on an actual Windows
-  machine in this session — please report back if you hit anything odd
-  there.
+- **Windows VPN-avoidance logic is compile-verified, not yet
+  runtime-verified** on real Windows/WARP hardware — see "Working around
+  always-on VPNs" above.
+- Tested so far primarily on Linux (including real multi-node mesh runs);
+  the Windows binaries cross-compile cleanly and have the same feature
+  set, but haven't been run on an actual Windows machine in this
+  session — please report back if you hit anything odd there.

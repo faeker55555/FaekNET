@@ -27,6 +27,41 @@ pub struct MeConfig {
     /// UDP/IP + encryption overhead this tool adds around every packet.
     #[serde(default = "default_mtu")]
     pub mtu: u16,
+    /// DNS-style suffix used for local mesh domain names, e.g. with the
+    /// default "mesh" a peer named "alice" becomes reachable as
+    /// "alice.mesh" once hosts-file sync (and/or the built-in DNS server)
+    /// is enabled. Purely cosmetic/organizational -- has no effect on
+    /// routing, which is always done by virtual IP under the hood.
+    #[serde(default = "default_domain_suffix")]
+    pub domain_suffix: String,
+    /// Whether to automatically keep a managed block in the OS hosts file
+    /// (/etc/hosts or Windows' System32\drivers\etc\hosts) up to date with
+    /// "<peer>.<suffix> -> virtual ip" entries for every known peer plus
+    /// ourselves. On by default: it needs no new privileges beyond what
+    /// the virtual adapter already requires (root/Administrator), and
+    /// works with literally every application unconditionally, unlike DNS
+    /// integration which some OS network stacks fight to override.
+    #[serde(default = "default_true")]
+    pub sync_hosts_file: bool,
+    /// Whether to run the built-in local DNS resolver (binds a UDP socket,
+    /// answers "*.<suffix>" queries with the right virtual IP, and
+    /// forwards everything else upstream). Off by default -- it's a
+    /// heavier, more failure-prone mechanism than hosts-file sync (see
+    /// dns.rs), so it's opt-in for people who specifically want subdomain
+    /// support or don't want to rely on the hosts file.
+    #[serde(default)]
+    pub dns_server: bool,
+    /// UDP port the built-in DNS server listens on, on 127.0.0.1. Defaults
+    /// to 53 (the standard DNS port) so the OS/network adapter can be
+    /// pointed at 127.0.0.1 as a normal resolver; changeable in case
+    /// something else on the machine already owns port 53.
+    #[serde(default = "default_dns_port")]
+    pub dns_port: u16,
+    /// Whether to also attempt to point this machine's own DNS resolution
+    /// at the built-in server automatically (best-effort; see dns.rs).
+    /// Only has any effect if `dns_server` is also enabled.
+    #[serde(default)]
+    pub dns_auto_configure: bool,
 }
 
 fn default_name() -> String {
@@ -39,6 +74,18 @@ fn default_prefix() -> u8 {
 
 fn default_mtu() -> u16 {
     1400
+}
+
+fn default_domain_suffix() -> String {
+    "mesh".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_dns_port() -> u16 {
+    53
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

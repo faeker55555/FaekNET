@@ -12,6 +12,7 @@ pub fn draw(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| match app.screen {
             Screen::Network => super::network_screen::draw(app, ui),
             Screen::Peers => super::peers_screen::draw(app, ui),
+            Screen::Domains => super::domains_screen::draw(app, ui),
             Screen::Log => super::log_screen::draw(app, ui),
             Screen::Settings => super::settings_screen::draw(app, ui),
         });
@@ -34,6 +35,8 @@ fn draw_nav_rail(app: &mut App, ctx: &egui::Context) {
                 nav_button(ui, app, Screen::Network, "N", "Network overview");
                 ui.add_space(4.0);
                 nav_button(ui, app, Screen::Peers, "P", "Peers");
+                ui.add_space(4.0);
+                nav_button(ui, app, Screen::Domains, "D", "Local domain names / browser");
                 ui.add_space(4.0);
                 nav_button(ui, app, Screen::Log, "L", "Activity log");
                 ui.add_space(4.0);

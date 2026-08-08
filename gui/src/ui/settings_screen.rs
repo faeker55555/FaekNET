@@ -125,6 +125,32 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
 
+    section(ui, "LOCAL DOMAIN NAMES & DNS", |ui| {
+        ui.label(
+            egui::RichText::new(
+                "See the Domains screen for the full list of names and the in-app browser. \
+                 These settings live in mesh.toml; changes here apply the next time the mesh \
+                 is (re)started.",
+            )
+            .color(theme::TEXT_DIM)
+            .size(11.0),
+        );
+        ui.add_space(8.0);
+        kv_row(ui, "DOMAIN SUFFIX", &cfg.me.domain_suffix);
+        kv_row(ui, "HOSTS-FILE SYNC", if cfg.me.sync_hosts_file { "enabled" } else { "disabled" });
+        kv_row(ui, "BUILT-IN DNS RESOLVER", if cfg.me.dns_server { "enabled" } else { "disabled" });
+        if cfg.me.dns_server {
+            kv_row(ui, "DNS PORT", &cfg.me.dns_port.to_string());
+            kv_row(
+                ui,
+                "DNS AUTO-CONFIGURE",
+                if cfg.me.dns_auto_configure { "enabled" } else { "disabled" },
+            );
+        }
+    });
+
+    ui.add_space(14.0);
+
     section(ui, "ABOUT", |ui| {
         kv_row(ui, "CONFIG FILE", "mesh.toml (current directory)");
         kv_row(ui, "TRANSPORT", "UDP, ChaCha20-Poly1305 encrypted");

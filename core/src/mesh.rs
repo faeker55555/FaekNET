@@ -10,7 +10,9 @@ use tun_rs::DeviceBuilder;
 
 use crate::config::{Config, PeerConfig};
 use crate::crypto::Cipher;
+use crate::dns::{self, DnsHandle};
 use crate::gossip::{self, GossipEntry};
+use crate::hosts;
 use crate::peer::{now_secs, Peer};
 use crate::proto;
 use crate::stun;
@@ -241,6 +243,19 @@ pub struct MeshState {
     /// everything gossip discovered and go back to only the manually
     /// configured peers until gossip rediscovers them again.
     pub config: Mutex<Config>,
+    /// Suffix appended to sanitized peer names to build local domain
+    /// names (e.g. "mesh" -> "alice.mesh"). Copied out of config at
+    /// startup for cheap access from the hot paths that refresh
+    /// hosts-file/DNS entries.
+    domain_suffix: String,
+    sync_hosts_file: bool,
+    /// Present only if the built-in DNS resolver is enabled; shared with
+    /// its background thread so peer-table changes can be reflected
+    /// immediately rather than on a polling delay.
+    dns_table: Option<dns::DnsTable>,
+    /// Handle to the DNS resolver thread, if running, so it can be
+    /// stopped when the mesh stops.
+    dns_handle: Mutex<Option<DnsHandle>>,
 }
 
 impl MeshState {
@@ -328,6 +343,39 @@ impl MeshState {
             name: entry.name.clone(),
             addr: entry.addr,
         })
+    }
+}
+
+/// Rebuilds the full local-domain-name mapping (ourselves + every known
+/// peer) and pushes it to whichever mechanisms are enabled: the hosts
+/// file, and/or the built-in DNS resolver's live table. Called after
+/// startup and every time the peer table changes (new peer via gossip or
+/// PING, address/name update via gossip, manual add-peer) so names never
+/// lag behind reality by more than one such event.
+fn refresh_domain_names(state: &MeshState) {
+    if !state.sync_hosts_file && state.dns_table.is_none() {
+        return; // neither mechanism enabled -- nothing to do
+    }
+    let mut raw: Vec<(String, Ipv4Addr)> = vec![(state.my_name.clone(), state.my_virtual_ip)];
+    for peer in state.peers_snapshot() {
+        raw.push((peer.name(), peer.virtual_ip));
+    }
+    let entries = hosts::build_entries(&state.domain_suffix, &raw);
+
+    if state.sync_hosts_file {
+        match hosts::sync(&entries) {
+            Ok(()) => {}
+            Err(e) => log(&format!(
+                "Warning: could not update hosts file for local domain names ({e}). \
+This does not affect mesh connectivity, only the convenience of using \
+names like 'alice.{}' instead of raw virtual IPs.",
+                state.domain_suffix
+            )),
+        }
+    }
+    if let Some(table) = &state.dns_table {
+        let flat: Vec<(String, Ipv4Addr)> = entries.into_iter().map(|e| (e.hostname, e.virtual_ip)).collect();
+        dns::update_table(table, flat);
     }
 }
 
@@ -489,6 +537,26 @@ impl MeshHandle {
     /// blocked in a socket read will exit within one `RECV_LOOP_TIMEOUT`.
     pub fn stop(&self) {
         self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.state.dns_handle.lock().unwrap().take() {
+            handle.stop();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if self.state.config.lock().unwrap().me.dns_auto_configure {
+                if let Some((_, iface_name)) = get_real_interface() {
+                    dns::try_undo_auto_configure(&iface_name);
+                }
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if self.state.config.lock().unwrap().me.dns_auto_configure {
+                dns::try_undo_auto_configure();
+            }
+        }
+        if self.state.sync_hosts_file {
+            let _ = hosts::remove_block();
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -546,6 +614,25 @@ impl MeshHandle {
             self.state.peers.write().unwrap().insert(peer.virtual_ip, new_peer);
         }
         persist_peer_addr(&self.state, peer.virtual_ip, &peer.name, addr);
+        refresh_domain_names(&self.state);
+    }
+
+    /// Point-in-time view of this machine's local mesh domain names
+    /// (itself plus every currently-known peer), for the GUI's domains
+    /// screen and the "open in browser" shortcut.
+    pub fn domain_snapshot(&self) -> Vec<(String, Ipv4Addr)> {
+        let cfg = self.state.config.lock().unwrap();
+        let suffix = cfg.me.domain_suffix.clone();
+        drop(cfg);
+        let mut raw: Vec<(String, Ipv4Addr)> =
+            vec![(self.state.my_name.clone(), self.state.my_virtual_ip)];
+        for peer in self.state.peers_snapshot() {
+            raw.push((peer.name(), peer.virtual_ip));
+        }
+        hosts::build_entries(&suffix, &raw)
+            .into_iter()
+            .map(|e| (e.hostname, e.virtual_ip))
+            .collect()
     }
 }
 
@@ -579,6 +666,13 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
     let mtu = config.me.mtu;
     let prefix = config.me.prefix;
     let listen_port = config.me.listen_port;
+    let domain_suffix = config.me.domain_suffix.clone();
+    let sync_hosts_file = config.me.sync_hosts_file;
+    let dns_server_enabled = config.me.dns_server;
+    let dns_port = config.me.dns_port;
+    let dns_auto_configure = config.me.dns_auto_configure;
+
+    let dns_table = if dns_server_enabled { Some(dns::new_table()) } else { None };
 
     let state = Arc::new(MeshState {
         cipher,
@@ -589,7 +683,43 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
         my_public_addr: Mutex::new(None),
         self_stun: SelfStunWaiter::new(),
         config: Mutex::new(config),
+        domain_suffix,
+        sync_hosts_file,
+        dns_table: dns_table.clone(),
+        dns_handle: Mutex::new(None),
     });
+
+    // ---- Local domain names: hosts-file sync and/or built-in DNS ----
+    if let Some(table) = &dns_table {
+        match dns::start(dns_port, table.clone()) {
+            Ok(handle) => {
+                *state.dns_handle.lock().unwrap() = Some(handle);
+                if dns_auto_configure {
+                    #[cfg(target_os = "linux")]
+                    {
+                        if let Err(e) = dns::try_auto_configure_system(dns_port) {
+                            log(&format!("Warning: DNS auto-configure failed: {e}"));
+                        }
+                    }
+                    #[cfg(target_os = "windows")]
+                    {
+                        if let Some((_, iface_name)) = get_real_interface() {
+                            if let Err(e) = dns::try_auto_configure_system(&iface_name, dns_port) {
+                                log(&format!("Warning: DNS auto-configure failed: {e}"));
+                            }
+                        } else {
+                            log("Warning: DNS auto-configure skipped (could not identify a network interface).");
+                        }
+                    }
+                }
+            }
+            Err(e) => log(&format!(
+                "Warning: could not start built-in DNS resolver on 127.0.0.1:{dns_port} ({e}). \
+Local mesh domain names will still work via the hosts file if enabled."
+            )),
+        }
+    }
+    refresh_domain_names(&state);
 
     // ---- Set up the virtual network adapter ----
     let dev_name = std::env::var("LAN_MESH_DEV_NAME").unwrap_or_else(|_| "lanmesh0".to_string());
@@ -736,6 +866,7 @@ On Windows this needs Administrator and wintun.dll next to the executable."
 adding them so we can reach back (their real name will arrive shortly via gossip)."
                                 ));
                                 persist_peer_addr(&state, virtual_ip, &name, addr);
+                                refresh_domain_names(&state);
                                 state.get_peer(&virtual_ip).expect("just inserted")
                             }
                             _ => continue,
@@ -785,12 +916,14 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                                             "Discovered new peer via gossip: '{name}' ({virtual_ip}) @ {addr}"
                                         ));
                                         persist_peer_addr(&state, virtual_ip, &name, addr);
+                                        refresh_domain_names(&state);
                                     }
                                     GossipOutcome::AddressUpdated { virtual_ip, name, addr } => {
                                         log(&format!(
                                             "Updated peer '{name}' ({virtual_ip}) address via gossip -> {addr}"
                                         ));
                                         persist_peer_addr(&state, virtual_ip, &name, addr);
+                                        refresh_domain_names(&state);
                                     }
                                 }
                             }

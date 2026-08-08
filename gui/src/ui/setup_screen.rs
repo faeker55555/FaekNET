@@ -48,6 +48,7 @@ fn draw_form(app: &mut App, ui: &mut egui::Ui) {
             labeled_field(ui, "VIRTUAL IP", &mut form.virtual_ip);
             labeled_field(ui, "SUBNET PREFIX", &mut form.prefix);
             labeled_field(ui, "LISTEN PORT", &mut form.listen_port);
+            labeled_field(ui, "LOCAL DOMAIN SUFFIX (peers become <name>.<suffix>)", &mut form.domain_suffix);
 
             ui.add_space(6.0);
             ui.label(egui::RichText::new("PRE-SHARED KEY").color(theme::TEXT_DIM).size(11.0));
@@ -196,6 +197,12 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
     };
     Cipher::from_psk_b64(&psk).map_err(|e| format!("Invalid pre-shared key: {e}"))?;
 
+    let domain_suffix = if form.domain_suffix.trim().is_empty() {
+        "mesh".to_string()
+    } else {
+        form.domain_suffix.trim().to_string()
+    };
+
     Ok(Config {
         me: MeConfig {
             name: if form.name.trim().is_empty() { "player".to_string() } else { form.name.trim().to_string() },
@@ -204,6 +211,11 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
             listen_port,
             psk,
             mtu: 1400,
+            domain_suffix,
+            sync_hosts_file: true,
+            dns_server: false,
+            dns_port: 53,
+            dns_auto_configure: false,
         },
         peers: Vec::new(),
     })

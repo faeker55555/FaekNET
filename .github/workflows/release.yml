@@ -40,7 +40,8 @@ jobs:
           sudo apt-get install -y \
             libxkbcommon-dev libwayland-dev libgtk-3-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libx11-dev libxrandr-dev libxi-dev libxcursor-dev
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libwebkit2gtk-4.1-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -66,7 +67,8 @@ jobs:
           sudo apt-get install -y \
             libxkbcommon-dev libwayland-dev libgtk-3-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libx11-dev libxrandr-dev libxi-dev libxcursor-dev
+            libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libwebkit2gtk-4.1-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -83,6 +85,7 @@ jobs:
           mkdir -p "dist/${OUT}"
           cp target/release/lan_mesh "dist/${OUT}/"
           cp target/release/lan_mesh_gui "dist/${OUT}/"
+          cp target/release/lan_mesh_browser "dist/${OUT}/"
           cp -r extras "dist/${OUT}/extras"
           cp scripts/linux/*.sh "dist/${OUT}/"
           chmod +x "dist/${OUT}"/*.sh
@@ -146,6 +149,7 @@ jobs:
           mkdir -p "dist/${OUT}"
           cp target/x86_64-pc-windows-gnu/release/lan_mesh.exe "dist/${OUT}/"
           cp target/x86_64-pc-windows-gnu/release/lan_mesh_gui.exe "dist/${OUT}/"
+          cp target/x86_64-pc-windows-gnu/release/lan_mesh_browser.exe "dist/${OUT}/"
           cp wintun_extracted/wintun/bin/amd64/wintun.dll "dist/${OUT}/"
           cp wintun_extracted/wintun/LICENSE.txt "dist/${OUT}/WINTUN_LICENSE.txt"
           cp -r extras "dist/${OUT}/extras"

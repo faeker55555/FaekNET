@@ -12,3 +12,19 @@ tun-rs = "2"
 chacha20poly1305 = "0.11"
 rand = "0.9"
 base64 = "0.22"
+
+# Windows-only: used to find the real physical/internet-facing adapter
+# (explicitly skipping VPN-style virtual adapters like Cloudflare WARP's
+# "CloudflareWARP" interface) and to pin the mesh's UDP socket to it via
+# IP_UNICAST_IF, mirroring what the Linux build already does with
+# SO_BINDTODEVICE. See mesh.rs's get_real_interface()/bind_to_interface()
+# for why this matters: without it, an active VPN/WARP client silently
+# reroutes the mesh's own outbound traffic (including self-STUN discovery)
+# through its tunnel, making the mesh report the VPN's address instead of
+# your real one -- and that's generally not fixable by "excluding" the
+# mesh's traffic via the VPN's own UI, since not all VPN clients expose a
+# scriptable per-app/per-port exclusion (Cloudflare WARP's Windows GUI
+# client doesn't, unlike its Linux/macOS CLI's `warp-cli` command).
+[target.'cfg(windows)'.dependencies]
+netconfig-rs = "0.1"
+windows = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_Foundation"] }

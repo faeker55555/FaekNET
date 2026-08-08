@@ -36,10 +36,11 @@ pub fn log(msg: &str) {
 /// also have the mesh's own virtual TUN adapter and/or VPN adapters
 /// present: without pinning, the OS could pick an unexpected route for
 /// mesh traffic, especially once the TUN device brings up a route for the
-/// mesh subnet. Linux-only: Windows binds by device differently (and
-/// socket2's bind_device is POSIX-only), so this optimization is simply
-/// skipped there -- the socket still works correctly, just without the
-/// extra pinning.
+/// mesh subnet -- or, notably, once an always-on VPN/proxy client like
+/// Cloudflare WARP rewrites the default route to point at its own virtual
+/// adapter, which would otherwise silently drag the mesh's own traffic
+/// (including self-STUN discovery) through the VPN and report the VPN's
+/// address as "yours" instead of your real one.
 #[cfg(target_os = "linux")]
 fn get_real_interface() -> Option<String> {
     let output = std::process::Command::new("sh")
@@ -53,6 +54,68 @@ fn get_real_interface() -> Option<String> {
     } else {
         Some(iface)
     }
+}
+
+/// Windows equivalent of the Linux function above: picks the best
+/// candidate physical adapter, explicitly skipping known VPN/tunnel-style
+/// virtual adapters by their driver description (e.g. Cloudflare WARP's
+/// is literally named "Cloudflare WARP Interface Tunnel" in
+/// GetIfEntry2/description() -- the same signal the Linux path filters on
+/// by interface name). Windows Defender/other VPN clients that don't
+/// expose a scriptable exclusion mechanism (unlike WARP's own `warp-cli`
+/// on Linux/macOS, which has no equivalent in WARP's Windows GUI client)
+/// are exactly the case this exists to work around: rather than relying
+/// on the VPN cooperating, the mesh routes around it at the socket level.
+///
+/// Returns the winning interface's index (what IP_UNICAST_IF needs) and a
+/// human-readable label for logging.
+#[cfg(target_os = "windows")]
+fn get_real_interface() -> Option<(u32, String)> {
+    use netconfig_rs::sys::InterfaceExt;
+
+    const VPN_DESCRIPTION_MARKERS: &[&str] = &[
+        "cloudflare warp",
+        "wireguard",
+        "openvpn",
+        "tap-windows",
+        "wintun",
+        "nordlynx",
+        "tunnelbear",
+    ];
+
+    let interfaces = netconfig_rs::list_interfaces().ok()?;
+    let mut best: Option<(u32, String)> = None;
+    for iface in interfaces {
+        let Ok(index) = iface.index() else { continue };
+        let Ok(addresses) = iface.addresses() else { continue };
+        // Only interested in adapters that actually have an IPv4 address
+        // (rules out disabled/unconfigured adapters without needing a
+        // separate "is this adapter up" check).
+        if !addresses.iter().any(|a| a.addr().is_ipv4()) {
+            continue;
+        }
+        let description = iface.description().unwrap_or_default().to_lowercase();
+        let name = iface.name().unwrap_or_else(|_| format!("if{index}"));
+        if VPN_DESCRIPTION_MARKERS.iter().any(|marker| description.contains(marker)) {
+            continue; // explicitly excluded, e.g. Cloudflare WARP
+        }
+        // Also skip loopback and our own virtual mesh adapter by name, in
+        // case a future run reuses the same process before the old
+        // adapter is fully torn down.
+        if name.eq_ignore_ascii_case("loopback") || name.to_lowercase().starts_with("lanmesh") {
+            continue;
+        }
+        // First non-excluded candidate wins; if multiple physical NICs
+        // exist (e.g. Wi-Fi + Ethernet both up), this doesn't attempt to
+        // rank them by route metric the way Linux's default-route lookup
+        // implicitly does -- good enough for the common case, and still
+        // strictly better than picking whatever the VPN's route
+        // rewriting would otherwise cause the OS to choose.
+        if best.is_none() {
+            best = Some((index, name));
+        }
+    }
+    best
 }
 
 fn create_udp_socket(listen_port: u16) -> std::io::Result<UdpSocket> {
@@ -69,9 +132,53 @@ fn create_udp_socket(listen_port: u16) -> std::io::Result<UdpSocket> {
             }
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some((index, name)) = get_real_interface() {
+            match bind_socket_to_interface_windows(&socket, index) {
+                Ok(()) => log(&format!("UDP socket bound to interface: {name} (index {index})")),
+                Err(e) => log(&format!(
+                    "Could not bind UDP socket to interface '{name}' ({e}); continuing without it."
+                )),
+            }
+        } else {
+            log("Warning: could not identify a non-VPN network interface to bind to; \
+if you have Cloudflare WARP or another always-on VPN active, the mesh's \
+self-detected public address may be wrong.");
+        }
+    }
     let addr: SocketAddr = format!("0.0.0.0:{}", listen_port).parse().unwrap();
     socket.bind(&addr.into())?;
     Ok(socket.into())
+}
+
+/// Applies IP_UNICAST_IF, the Windows equivalent of Linux's
+/// SO_BINDTODEVICE: restricts which interface this socket's *outbound*
+/// unicast IPv4 traffic egresses through, regardless of what the (WARP-
+/// rewritten) routing table would otherwise pick. Must be called before
+/// the socket is used for the binding to take effect for all subsequent
+/// sends.
+#[cfg(target_os = "windows")]
+fn bind_socket_to_interface_windows(socket: &Socket, interface_index: u32) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Networking::WinSock::{setsockopt, IPPROTO_IP, IP_UNICAST_IF, SOCKET};
+
+    // IP_UNICAST_IF expects the interface index in network byte order,
+    // packed into the same 4 bytes a socket option value normally holds
+    // (this is a well-documented Winsock quirk, distinct from IPv6's
+    // equivalent option which wants host byte order -- see Microsoft's
+    // own docs and the socket2/shadowsocks-rust prior art referenced in
+    // this function's design).
+    let index_network_order: u32 = interface_index.to_be();
+    let raw_socket = socket.as_raw_socket();
+    let win_socket = SOCKET(raw_socket as usize);
+    let bytes = index_network_order.to_ne_bytes();
+
+    let result = unsafe { setsockopt(win_socket, IPPROTO_IP.0, IP_UNICAST_IF, Some(&bytes)) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Slot used to hand a STUN binding response, received on the mesh's own
@@ -147,6 +254,48 @@ impl MeshState {
 
     fn peer_count(&self) -> usize {
         self.peers.read().unwrap().len()
+    }
+
+    /// Provisionally learns a brand-new peer purely from an unsolicited
+    /// but authenticated PING -- the fix for the "my friend added me and
+    /// can reach me, but I never added them so I can't reach back" case.
+    ///
+    /// Without this, a one-sided add (A configures B's address, but B
+    /// never configures A's) is a dead end: A's keepalive/PING packets
+    /// physically arrive at B's machine, but B's receive loop used to
+    /// silently drop anything from a virtual IP it didn't already
+    /// recognize -- even though the packet already passed ChaCha20-
+    /// Poly1305 authentication against the shared mesh key, which is the
+    /// same trust bar gossip-discovered peers are held to. This closes
+    /// that gap: hearing a PING from someone we don't know is treated the
+    /// same way hearing about them via gossip would be. We don't yet know
+    /// their display name (PING packets don't carry one), so the entry is
+    /// created with a placeholder name that gets overwritten within one
+    /// gossip cycle once the new peer (or a mutual friend) announces it
+    /// properly.
+    ///
+    /// Returns Some(NewPeer) if this actually added a new entry (worth
+    /// logging/persisting), or None if the peer was already known or the
+    /// mesh is at its sanity cap.
+    fn learn_peer_from_ping(&self, virtual_ip: Ipv4Addr, addr: SocketAddr) -> Option<GossipOutcome> {
+        if virtual_ip == self.my_virtual_ip {
+            return None;
+        }
+        if self.get_peer(&virtual_ip).is_some() {
+            return None; // already known; observe() on the normal path handles address updates
+        }
+        if self.peer_count() >= MAX_PEERS {
+            return None;
+        }
+        let placeholder_name = format!("peer-{virtual_ip}");
+        let epoch = now_secs() as u32;
+        let peer = Arc::new(Peer::from_gossip(virtual_ip, &placeholder_name, addr, epoch));
+        self.peers.write().unwrap().insert(virtual_ip, peer);
+        Some(GossipOutcome::NewPeer {
+            virtual_ip,
+            name: placeholder_name,
+            addr,
+        })
     }
 
     /// Applies one gossip entry to our local peer table. Returns Some
@@ -561,14 +710,38 @@ On Windows this needs Administrator and wintun.dll next to the executable."
                 let Some((hdr, payload)) = proto::parse(&plain) else {
                     continue;
                 };
-                // Only accept traffic claiming to be from a known peer.
-                // Gossip is how *new* peers get introduced (by another
-                // already-known peer describing them in a payload) -- an
-                // unsolicited packet from a virtual IP we've never heard
-                // of is never itself the introduction mechanism, even
-                // though it already passed AEAD authentication.
-                let Some(peer) = state.get_peer(&hdr.sender_virtual_ip) else {
-                    continue;
+                // Normally, only traffic from an already-known peer is
+                // accepted -- gossip is the usual way *new* peers get
+                // introduced (an already-known peer describing them in a
+                // payload). The one deliberate exception: an unsolicited
+                // TYPE_PING from a virtual IP we've never heard of is
+                // itself a valid introduction, since it means someone who
+                // has our mesh's shared key (the packet already passed
+                // AEAD authentication) has configured us as a peer and is
+                // actively trying to reach us. Without this, a one-sided
+                // add (they add us, we never add them) would leave them
+                // permanently unreachable from our side -- see the
+                // learn_peer_from_ping doc comment for the full story.
+                // TYPE_DATA is deliberately NOT treated this way: we only
+                // ever want to auto-learn a peer from a packet whose whole
+                // purpose is self-announcement, never from what could be
+                // real application traffic.
+                let peer = match state.get_peer(&hdr.sender_virtual_ip) {
+                    Some(peer) => peer,
+                    None if hdr.packet_type == proto::TYPE_PING => {
+                        match state.learn_peer_from_ping(hdr.sender_virtual_ip, from_addr) {
+                            Some(GossipOutcome::NewPeer { virtual_ip, name, addr }) => {
+                                log(&format!(
+                                    "Peer '{name}' ({virtual_ip}) reached us first at {addr} -- \
+adding them so we can reach back (their real name will arrive shortly via gossip)."
+                                ));
+                                persist_peer_addr(&state, virtual_ip, &name, addr);
+                                state.get_peer(&virtual_ip).expect("just inserted")
+                            }
+                            _ => continue,
+                        }
+                    }
+                    None => continue,
                 };
                 let was_new = peer.seconds_since_seen().is_none();
                 let addr_changed = peer.observe(from_addr);

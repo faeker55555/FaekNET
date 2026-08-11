@@ -31,6 +31,31 @@ const END_MARKER: &str = "# <<< lan_mesh managed block <<<";
 pub struct HostEntry {
     pub hostname: String,
     pub virtual_ip: Ipv4Addr,
+    /// True for a peer's own top-level name (e.g. "alice.mesh"), false for
+    /// a service name hung off it (e.g. "game.alice.mesh"). Hosts-file
+    /// sync doesn't care about the distinction (every entry is written
+    /// literally either way), but `dns.rs` uses it to know which
+    /// hostnames are valid *wildcard bases* -- i.e. which names any
+    /// unregistered subdomain (`whatever.alice.mesh`) should still
+    /// resolve through, versus a specific already-named service that
+    /// should only match exactly.
+    pub is_peer_root: bool,
+    /// Set only for a service entry: the port it's reachable on. Hosts
+    /// files can't encode a port (DNS/hosts only ever map name -> address),
+    /// so this doesn't affect `sync()`'s output -- it exists purely for
+    /// UI/browser-launch convenience (e.g. pre-filling `http://game.alice.mesh:25565/`).
+    pub port: Option<u16>,
+}
+
+/// One peer's full domain-name picture: its own root name plus whatever
+/// named services it has advertised (via gossip or local config). Used by
+/// `build_entries` to expand into the flat `HostEntry` list that
+/// `hosts.rs`/`dns.rs` actually consume.
+#[derive(Debug, Clone)]
+pub struct PeerDomainInfo {
+    pub name: String,
+    pub virtual_ip: Ipv4Addr,
+    pub services: Vec<(String, u16)>,
 }
 
 /// Turns a peer's display name into a valid, safe DNS-label-ish hostname:
@@ -68,27 +93,74 @@ pub fn sanitize_label(name: &str) -> String {
 /// octet of the virtual IP (e.g. two peers both named "alice" become
 /// `alice.mesh` and `alice-12.mesh`) so a naming collision never silently
 /// drops an entry.
+///
+/// This is the no-services convenience wrapper around
+/// `build_entries_with_services` for callers (older CLI paths, simple
+/// listings) that don't need per-peer subdomains.
 pub fn build_entries(suffix: &str, peers: &[(String, Ipv4Addr)]) -> Vec<HostEntry> {
-    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let infos: Vec<PeerDomainInfo> = peers
+        .iter()
+        .map(|(name, ip)| PeerDomainInfo {
+            name: name.clone(),
+            virtual_ip: *ip,
+            services: Vec::new(),
+        })
+        .collect();
+    build_entries_with_services(suffix, &infos)
+}
+
+/// Full version: also expands each peer's advertised services into their
+/// own subdomain entries (`<service>.<peer-label>.<suffix>`), e.g. a
+/// peer "alice" advertising a "game" service on port 25565 gets both
+/// `alice.mesh` (root) and `game.alice.mesh` (service) entries. Service
+/// labels are sanitized the same way peer names are, and disambiguated
+/// per-peer if a peer somehow advertises the same service name twice.
+pub fn build_entries_with_services(suffix: &str, peers: &[PeerDomainInfo]) -> Vec<HostEntry> {
+    let mut seen_roots: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut entries = Vec::with_capacity(peers.len());
-    for (name, ip) in peers {
-        let base = sanitize_label(name);
-        let count = seen.entry(base.clone()).or_insert(0);
-        let label = if *count == 0 {
+    for peer in peers {
+        let base = sanitize_label(&peer.name);
+        let count = seen_roots.entry(base.clone()).or_insert(0);
+        let root_label = if *count == 0 {
             base.clone()
         } else {
-            format!("{base}-{}", ip.octets()[3])
+            format!("{base}-{}", peer.virtual_ip.octets()[3])
         };
         *count += 1;
-        let hostname = if suffix.is_empty() {
-            label
+        let root_hostname = if suffix.is_empty() {
+            root_label.clone()
         } else {
-            format!("{label}.{suffix}")
+            format!("{root_label}.{suffix}")
         };
         entries.push(HostEntry {
-            hostname,
-            virtual_ip: *ip,
+            hostname: root_hostname,
+            virtual_ip: peer.virtual_ip,
+            is_peer_root: true,
+            port: None,
         });
+
+        let mut seen_services: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        for (service_name, port) in &peer.services {
+            let service_base = sanitize_label(service_name);
+            let scount = seen_services.entry(service_base.clone()).or_insert(0);
+            let service_label = if *scount == 0 {
+                service_base.clone()
+            } else {
+                format!("{service_base}-{}", *scount + 1)
+            };
+            *scount += 1;
+            let service_hostname = if suffix.is_empty() {
+                format!("{service_label}.{root_label}")
+            } else {
+                format!("{service_label}.{root_label}.{suffix}")
+            };
+            entries.push(HostEntry {
+                hostname: service_hostname,
+                virtual_ip: peer.virtual_ip,
+                is_peer_root: false,
+                port: Some(*port),
+            });
+        }
     }
     entries
 }
@@ -223,6 +295,48 @@ mod tests {
         let peers = vec![("alice".to_string(), Ipv4Addr::new(10, 66, 0, 2))];
         let entries = build_entries("", &peers);
         assert_eq!(entries[0].hostname, "alice");
+    }
+
+    #[test]
+    fn service_becomes_subdomain_of_peer() {
+        let peers = vec![PeerDomainInfo {
+            name: "alice".to_string(),
+            virtual_ip: Ipv4Addr::new(10, 66, 0, 2),
+            services: vec![("game".to_string(), 25565), ("Web Panel".to_string(), 8080)],
+        }];
+        let entries = build_entries_with_services("mesh", &peers);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].hostname, "alice.mesh");
+        assert!(entries[0].is_peer_root);
+        assert_eq!(entries[0].port, None);
+        assert_eq!(entries[1].hostname, "game.alice.mesh");
+        assert!(!entries[1].is_peer_root);
+        assert_eq!(entries[1].port, Some(25565));
+        assert_eq!(entries[2].hostname, "web-panel.alice.mesh");
+        assert_eq!(entries[2].port, Some(8080));
+    }
+
+    #[test]
+    fn duplicate_service_names_on_same_peer_are_disambiguated() {
+        let peers = vec![PeerDomainInfo {
+            name: "alice".to_string(),
+            virtual_ip: Ipv4Addr::new(10, 66, 0, 2),
+            services: vec![("web".to_string(), 8080), ("web".to_string(), 8081)],
+        }];
+        let entries = build_entries_with_services("mesh", &peers);
+        assert_eq!(entries[1].hostname, "web.alice.mesh");
+        assert_eq!(entries[2].hostname, "web-2.alice.mesh");
+    }
+
+    #[test]
+    fn services_with_empty_suffix() {
+        let peers = vec![PeerDomainInfo {
+            name: "alice".to_string(),
+            virtual_ip: Ipv4Addr::new(10, 66, 0, 2),
+            services: vec![("game".to_string(), 25565)],
+        }];
+        let entries = build_entries_with_services("", &peers);
+        assert_eq!(entries[1].hostname, "game.alice");
     }
 
     #[test]

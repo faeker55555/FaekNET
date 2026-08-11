@@ -64,6 +64,16 @@ pub struct MeConfig {
     pub dns_auto_configure: bool,
 }
 
+/// One named service this machine advertises to the mesh: a friendly
+/// subdomain label plus the port it's reachable on (always at this
+/// machine's own virtual IP -- services don't have their own address,
+/// they're just a memorable name for "something on port N here").
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ServiceConfig {
+    pub name: String,
+    pub port: u16,
+}
+
 fn default_name() -> String {
     "peer".to_string()
 }
@@ -101,6 +111,20 @@ pub struct Config {
     pub me: MeConfig,
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
+    /// Named services this machine hosts on the mesh, e.g. a game server
+    /// or a web dashboard -- each becomes its own subdomain
+    /// (`<service>.<my name>.<suffix>`, e.g. `game.alice.mesh`) that's
+    /// gossiped to the whole mesh the same way peer addresses are, so
+    /// every member eventually learns about it without needing to ask.
+    /// Lives at the top level of the config (a `[[services]]` table, same
+    /// shape as `[[peers]]`) rather than nested under `[me]`, since TOML
+    /// requires the fully-qualified `[[me.services]]` for a nested array
+    /// of tables -- putting it at the top level avoids that easy-to-miss
+    /// footgun when hand-editing mesh.toml. See `hosts.rs`/`dns.rs` for
+    /// how these become actual resolvable names, and `gossip.rs` for the
+    /// wire format.
+    #[serde(default)]
+    pub services: Vec<ServiceConfig>,
 }
 
 impl Config {

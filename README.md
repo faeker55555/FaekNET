@@ -365,6 +365,48 @@ Two independent mechanisms provide this, both configurable per-machine in
 Use `lan_mesh domains` (CLI) or the **Domains** screen (GUI) to see the
 current name list and which mechanisms are active.
 
+### Subdomains: named services and wildcards
+
+Beyond a peer's own name, you can advertise **named services** — a game
+server, a web dashboard, whatever you host — as their own subdomain of
+your mesh name:
+
+```
+lan_mesh add-service game 25565
+```
+
+This is stored in mesh.toml as a top-level `[[services]]` table (same
+shape as `[[peers]]`):
+
+```toml
+[[services]]
+name = "game"
+port = 25565
+```
+
+Once the mesh is running, `game` becomes reachable as
+`game.alice.mesh` (`<service>.<your mesh name>.<suffix>`) — and this is
+**gossiped to the whole mesh automatically**, the same way peer
+addresses are, so every member eventually learns about it without you
+needing to tell them individually. The GUI's Domains screen has an
+inline form for this instead of the CLI command, plus a live list of
+every service you and your peers have advertised, each remove-able with
+one click; `lan_mesh list-services`/`lan_mesh remove-service <name>`
+are the CLI equivalents.
+
+If the built-in DNS resolver (`dns_server = true`) is enabled, it goes a
+step further: **any** subdomain of a peer's own name resolves to that
+peer automatically, even ones that were never explicitly registered as a
+service — `whatever.alice.mesh`, `dev.alice.mesh`, anything. This is
+useful for application-level virtual hosting (e.g. an nginx
+`server_name` block, or a game server that inspects the `Host` header)
+that wants to mint its own subdomains without touching mesh
+configuration at all. A registered service name still takes precedence
+if both would otherwise match. Hosts-file sync can't do this (a hosts
+file only ever maps exact names), so wildcard subdomains are the DNS
+resolver's one genuine capability edge over the always-on-by-default
+hosts-file mechanism.
+
 ## In-app browser
 
 A standalone browser window (`lan_mesh_browser`, its own executable) for
@@ -394,6 +436,26 @@ Launch it:
   `run-browser.sh` / `run-browser.bat`, which — unlike the GUI/CLI
   scripts — do **not** need root/Administrator, since the browser never
   touches the virtual adapter).
+
+### Linux: X11 vs Wayland
+
+wry's webviews are WebKitGTK widgets under the hood. Embedding one via a
+raw window handle only actually works under X11 -- under Wayland (the
+default session on many modern distros: CachyOS, Fedora Workstation,
+recent Ubuntu/GNOME, ...) that path fails immediately with
+`Error: UnsupportedWindowHandle`. To support both, the browser builds
+each webview as a native GTK widget (`WebViewBuilderExtUnix::build_gtk`)
+inside a `gtk::Fixed` container obtained from the window
+(`WindowExtUnix::gtk_window`) instead of going through a raw window
+handle at all -- this works identically under X11 and Wayland. Verified
+by running the browser against both a real X11 server (Xvfb) and a real
+headless Wayland compositor (Weston) in this repo's own testing; only
+the X11 path is screenshot-verified since headless Wayland compositors
+don't expose a working screenshot tool, but process liveness (no crash,
+webview loads, click-through to links works) was confirmed on both.
+Windows/macOS are unaffected by any of this -- they only ever had one
+windowing backend to begin with, and keep using the ordinary
+`HasWindowHandle`-based embedding path.
 
 ## Build & Release Pipeline
 
@@ -477,6 +539,36 @@ wasn't one available while building this. If it needs a fix once you
 try it for real (e.g. a different adapter description string on your
 WARP version, or multiple physical NICs needing better ranking than
 "first match wins"), tell me what you see and it's a quick follow-up.
+
+### Fixed: self-STUN never resolving on Windows ("infinite resolving of public address")
+
+A real bug was found and fixed in the adapter-selection logic above: it
+originally excluded the mesh's *own* virtual TUN adapter from
+consideration by checking whether the adapter's **name** started with
+`"lanmesh"`. On Windows this is fragile — the OS doesn't reliably
+preserve the requested adapter name (it can surface as `"Ethernet 3"`,
+`"Local Area Connection 2"`, etc., depending on driver/Windows version),
+and the mesh's own adapter's *driver description* (the other signal this
+code checks) defaults to its dev name too, so it never contained
+`"wintun"` either. When both checks missed, the mesh would end up
+picking **its own virtual adapter** as the "real" internet-facing
+interface, pin its UDP socket to it via `IP_UNICAST_IF`, and then every
+self-STUN probe would silently fail forever (no route to the internet
+from a virtual adapter) — which is exactly the "public address never
+resolves, warning repeats every ~25s" symptom.
+
+The fix: the mesh's own configured virtual IP is now passed into the
+adapter-selection logic directly, and any candidate adapter carrying
+that exact address is excluded outright — this can never miss (it's the
+address we ourselves asked the OS to assign) or misfire against a real
+NIC, unlike string-matching on a name/description Windows doesn't
+guarantee. The old name/description checks are kept as secondary,
+best-effort fallbacks. This selection logic has 7 dedicated unit tests
+(`core/src/mesh.rs`, `mesh::tests::*picks*`/`*excludes*`) that run on
+every platform's CI, including one that reproduces the exact failure
+mode (an adapter named `"Ethernet 3"` with description `"lanmesh0"` —
+i.e. neither legacy heuristic would have caught it) to make sure it
+can't regress silently.
 
 ## Known limitations
 

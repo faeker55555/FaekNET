@@ -62,6 +62,26 @@ impl Default for AddPeerModal {
     }
 }
 
+/// Scratch state for the Domains screen's inline "advertise a service"
+/// form (e.g. "game" on port 25565) -- kept separate from `AddPeerModal`
+/// since it's a different concept (a service isn't a peer), but follows
+/// the same "small owned scratch buffer + optional error" shape.
+pub struct AddServiceForm {
+    pub name: String,
+    pub port: String,
+    pub error: Option<String>,
+}
+
+impl Default for AddServiceForm {
+    fn default() -> Self {
+        AddServiceForm {
+            name: String::new(),
+            port: String::new(),
+            error: None,
+        }
+    }
+}
+
 pub struct SetupForm {
     pub name: String,
     pub virtual_ip: String,
@@ -110,6 +130,7 @@ pub struct App {
     pub screen: Screen,
     pub logs: LogBuffer,
     pub add_peer_modal: AddPeerModal,
+    pub add_service_form: AddServiceForm,
     pub last_refresh: std::time::Instant,
     pub toast: Option<(String, std::time::Instant)>,
 }
@@ -141,6 +162,7 @@ impl App {
             screen: Screen::Network,
             logs,
             add_peer_modal: AddPeerModal::default(),
+            add_service_form: AddServiceForm::default(),
             last_refresh: std::time::Instant::now(),
             toast: None,
         }

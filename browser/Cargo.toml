@@ -28,6 +28,20 @@ tao = "0.31"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# On Linux, wry's webviews are plain WebKitGTK widgets under the hood, and
+# embedding them via a raw X11 window handle (the cross-platform
+# HasWindowHandle path used on Windows/macOS) only ever works under X11 --
+# under Wayland (the default session on many modern distros, e.g. CachyOS,
+# Fedora, recent Ubuntu/GNOME) it fails immediately with
+# `Error::UnsupportedWindowHandle`, since there is no X11 window handle to
+# hand over. The fix used in main.rs is to build both webviews as GTK
+# widgets directly (`WebViewBuilderExtUnix::build_gtk`) inside a
+# `gtk::Fixed` container obtained via tao's `WindowExtUnix::gtk_window`,
+# which works under both X11 and Wayland -- this requires depending on the
+# `gtk` crate directly for the `gtk::Fixed` type and its extension traits.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [[bin]]
 name = "lan_mesh_browser"
 path = "src/main.rs"

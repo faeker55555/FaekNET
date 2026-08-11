@@ -218,6 +218,7 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
             dns_auto_configure: false,
         },
         peers: Vec::new(),
+        services: Vec::new(),
     })
 }
 

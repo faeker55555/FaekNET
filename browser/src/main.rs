@@ -17,6 +17,23 @@
 //! launching the browser from the main GUI with no specific target still
 //! gives you something immediately useful: one click to open any
 //! friend's locally-hosted game server admin panel, Plex, whatever.
+//!
+//! ## Linux: X11 vs Wayland
+//!
+//! wry's webviews are WebKitGTK widgets under the hood. Embedding one via
+//! a raw window handle (`WebViewBuilder::build`/`build_as_child`, the
+//! same cross-platform API used on Windows/macOS) only actually works
+//! under X11 -- under Wayland (the default session on many modern
+//! distros: CachyOS, Fedora Workstation, recent Ubuntu/GNOME, ...) tao's
+//! `window_handle()` returns a Wayland surface handle, which wry's X11-
+//! only embedding path rejects outright with `Error::UnsupportedWindowHandle`.
+//! That's the exact crash this file works around: instead of using
+//! `HasWindowHandle` on Linux, both webviews are built as native GTK
+//! widgets (`WebViewBuilderExtUnix::build_gtk`) inside a `gtk::Fixed`
+//! container obtained from the tao window via `WindowExtUnix::gtk_window`,
+//! which works identically under X11 and Wayland. Non-Linux platforms
+//! keep using the ordinary `HasWindowHandle`-based path, which is the
+//! only one available (and the correct/idiomatic one) there anyway.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -25,7 +42,15 @@ use tao::dpi::{LogicalPosition, LogicalSize};
 use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::window::WindowBuilder;
-use wry::{Rect, WebView, WebViewBuilder};
+#[cfg(target_os = "linux")]
+use tao::platform::unix::WindowBuilderExtUnix;
+#[cfg(target_os = "linux")]
+use tao::platform::unix::WindowExtUnix;
+#[cfg(target_os = "linux")]
+use gtk::prelude::{ContainerExt, WidgetExt};
+use wry::{WebView, WebViewBuilder};
+#[cfg(target_os = "linux")]
+use wry::WebViewBuilderExtUnix;
 
 const CHROME_HEIGHT: f64 = 44.0;
 
@@ -111,15 +136,23 @@ enum ChromeMsg {
 fn build_home_page() -> String {
     let entries: Vec<(String, String)> = match lan_mesh_core::config::Config::load() {
         Ok(cfg) => {
-            let mut raw = vec![(cfg.me.name.clone(), cfg.me.virtual_ip.to_string())];
+            let mut infos = vec![lan_mesh_core::hosts::PeerDomainInfo {
+                name: cfg.me.name.clone(),
+                virtual_ip: cfg.me.virtual_ip,
+                services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
+            }];
             for p in &cfg.peers {
-                raw.push((p.name.clone(), p.virtual_ip.to_string()));
+                infos.push(lan_mesh_core::hosts::PeerDomainInfo {
+                    name: p.name.clone(),
+                    virtual_ip: p.virtual_ip,
+                    // Peers' own services are only known once the mesh is
+                    // actually running and gossip has delivered them --
+                    // mesh.toml (what this standalone reader can see)
+                    // never stores other peers' services.
+                    services: Vec::new(),
+                });
             }
-            let hosts: Vec<(String, std::net::Ipv4Addr)> = raw
-                .iter()
-                .map(|(n, ip)| (n.clone(), ip.parse().unwrap()))
-                .collect();
-            lan_mesh_core::hosts::build_entries(&cfg.me.domain_suffix, &hosts)
+            lan_mesh_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
                 .into_iter()
                 .map(|e| (e.hostname, e.virtual_ip.to_string()))
                 .collect()
@@ -186,134 +219,8 @@ fn normalize_address(input: &str) -> String {
     format!("http://{trimmed}")
 }
 
-fn main() -> wry::Result<()> {
-    let start_arg = std::env::args().nth(1);
-    let start_target = resolve_start_target(start_arg);
-
-    let event_loop: EventLoop<ChromeMsg> = EventLoopBuilder::<ChromeMsg>::with_user_event().build();
-    let proxy: EventLoopProxy<ChromeMsg> = event_loop.create_proxy();
-
-    let window = WindowBuilder::new()
-        .with_title("lan_mesh browser")
-        .with_inner_size(LogicalSize::new(1000.0, 720.0))
-        .build(&event_loop)
-        .expect("failed to create browser window");
-
-    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
-
-    let chrome_proxy = proxy.clone();
-    let chrome_view = WebViewBuilder::new()
-        .with_bounds(Rect {
-            position: LogicalPosition::new(0.0, 0.0).into(),
-            size: LogicalSize::new(size.width, CHROME_HEIGHT).into(),
-        })
-        .with_html(CHROME_HTML)
-        .with_ipc_handler(move |msg: wry::http::Request<String>| {
-            let body = msg.into_body();
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
-                let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                let value = parsed.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let event = match kind {
-                    "navigate" => Some(ChromeMsg::Navigate(value)),
-                    "back" => Some(ChromeMsg::Back),
-                    "forward" => Some(ChromeMsg::Forward),
-                    "reload" => Some(ChromeMsg::Reload),
-                    "home" => Some(ChromeMsg::Home),
-                    _ => None,
-                };
-                if let Some(event) = event {
-                    let _ = chrome_proxy.send_event(event);
-                }
-            }
-        })
-        .build_as_child(&window)?;
-
-    let home_page = Rc::new(build_home_page());
-    let content_view = build_content_view(&window, size.width, size.height, &start_target, &home_page)?;
-    let content_view = Rc::new(RefCell::new(content_view));
-
-    sync_chrome(&chrome_view, &content_view.borrow(), &start_target);
-
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Wait;
-        match event {
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::WindowEvent { event: WindowEvent::Resized(new_size), .. } => {
-                let logical = new_size.to_logical::<f64>(window.scale_factor());
-                let _ = chrome_view.set_bounds(Rect {
-                    position: LogicalPosition::new(0.0, 0.0).into(),
-                    size: LogicalSize::new(logical.width, CHROME_HEIGHT).into(),
-                });
-                let _ = content_view.borrow().set_bounds(Rect {
-                    position: LogicalPosition::new(0.0, CHROME_HEIGHT).into(),
-                    size: LogicalSize::new(logical.width, (logical.height - CHROME_HEIGHT).max(0.0)).into(),
-                });
-            }
-            Event::UserEvent(msg) => {
-                let view = content_view.borrow();
-                match msg {
-                    ChromeMsg::Navigate(raw) => {
-                        let target = normalize_address(&raw);
-                        let url = if target == "about:home" {
-                            data_url_for(&home_page)
-                        } else {
-                            target
-                        };
-                        let _ = view.load_url(&url);
-                    }
-                    ChromeMsg::Back => {
-                        let _ = view.evaluate_script("history.back()");
-                    }
-                    ChromeMsg::Forward => {
-                        let _ = view.evaluate_script("history.forward()");
-                    }
-                    ChromeMsg::Reload => {
-                        let _ = view.evaluate_script("location.reload()");
-                    }
-                    ChromeMsg::Home => {
-                        let _ = view.load_url(&data_url_for(&home_page));
-                    }
-                }
-                drop(view);
-                poll_and_sync_chrome(&chrome_view, &content_view.borrow());
-            }
-            _ => {}
-        }
-    });
-}
-
-fn build_content_view(
-    window: &tao::window::Window,
-    width: f64,
-    height: f64,
-    start_target: &str,
-    home_page: &str,
-) -> wry::Result<WebView> {
-    let builder = WebViewBuilder::new()
-        .with_bounds(Rect {
-            position: LogicalPosition::new(0.0, CHROME_HEIGHT).into(),
-            size: LogicalSize::new(width, (height - CHROME_HEIGHT).max(0.0)).into(),
-        })
-        .with_back_forward_navigation_gestures(true);
-
-    let builder = if start_target == "about:home" {
-        builder.with_url(&data_url_for(home_page))
-    } else {
-        builder.with_url(start_target)
-    };
-
-    builder.build_as_child(window)
-}
-
 fn data_url_for(html: &str) -> String {
-    use wry::http::header::HeaderValue;
-    let _ = HeaderValue::from_static(""); // keep `http` import warm for future header use
-    format!(
-        "data:text/html;charset=utf-8,{}",
-        percent_encode(html)
-    )
+    format!("data:text/html;charset=utf-8,{}", percent_encode(html))
 }
 
 /// Minimal percent-encoding sufficient for embedding our own known-safe
@@ -355,4 +262,169 @@ fn poll_and_sync_chrome(chrome_view: &WebView, content_view: &WebView) {
         let escaped_status = status.replace('\\', "\\\\").replace('"', "\\\"");
         let _ = chrome_view.evaluate_script(&format!("window.__setStatus && window.__setStatus(\"{escaped_status}\")"));
     }
+}
+
+fn main() -> wry::Result<()> {
+    let start_arg = std::env::args().nth(1);
+    let start_target = resolve_start_target(start_arg);
+
+    let event_loop: EventLoop<ChromeMsg> = EventLoopBuilder::<ChromeMsg>::with_user_event().build();
+    let proxy: EventLoopProxy<ChromeMsg> = event_loop.create_proxy();
+
+    #[allow(unused_mut)]
+    let mut window_builder = WindowBuilder::new()
+        .with_title("lan_mesh browser")
+        .with_inner_size(LogicalSize::new(1000.0, 720.0));
+    #[cfg(target_os = "linux")]
+    {
+        // We build our own gtk::Fixed as the sole child instead of using
+        // tao's automatically-created gtk::Box, since Fixed is what lets
+        // us position both webviews with absolute pixel coordinates (the
+        // same layout model the non-Linux Rect-based positioning uses).
+        window_builder = window_builder.with_default_vbox(false);
+    }
+    let window = window_builder.build(&event_loop).expect("failed to create browser window");
+
+    let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+
+    let chrome_proxy = proxy.clone();
+    let ipc_handler = move |msg: wry::http::Request<String>| {
+        let body = msg.into_body();
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) {
+            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let value = parsed.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let event = match kind {
+                "navigate" => Some(ChromeMsg::Navigate(value)),
+                "back" => Some(ChromeMsg::Back),
+                "forward" => Some(ChromeMsg::Forward),
+                "reload" => Some(ChromeMsg::Reload),
+                "home" => Some(ChromeMsg::Home),
+                _ => None,
+            };
+            if let Some(event) = event {
+                let _ = chrome_proxy.send_event(event);
+            }
+        }
+    };
+
+    let home_page = Rc::new(build_home_page());
+    let start_url = if start_target == "about:home" {
+        data_url_for(&home_page)
+    } else {
+        start_target.clone()
+    };
+
+    #[cfg(target_os = "linux")]
+    let (chrome_view, content_view, fixed) = {
+        // gtk::Fixed lets us `put`/`move_` children at absolute pixel
+        // coordinates and lets wry's build_gtk() see it as a
+        // recognized-for-positioning container type (see
+        // add_to_container in wry's webkitgtk backend) -- the same
+        // capability the Rect-based `with_bounds`/`set_bounds` API gives
+        // on Windows/macOS, just reached through GTK's own widget tree
+        // instead of a raw window handle.
+        let fixed = gtk::Fixed::new();
+        window.gtk_window().add(&fixed);
+        window.gtk_window().show_all();
+
+        let chrome_view = WebViewBuilder::new()
+            .with_bounds(wry::Rect {
+                position: LogicalPosition::new(0.0, 0.0).into(),
+                size: LogicalSize::new(size.width, CHROME_HEIGHT).into(),
+            })
+            .with_html(CHROME_HTML)
+            .with_ipc_handler(ipc_handler)
+            .build_gtk(&fixed)?;
+
+        let content_view = WebViewBuilder::new()
+            .with_bounds(wry::Rect {
+                position: LogicalPosition::new(0.0, CHROME_HEIGHT).into(),
+                size: LogicalSize::new(size.width, (size.height - CHROME_HEIGHT).max(0.0)).into(),
+            })
+            .with_back_forward_navigation_gestures(true)
+            .with_url(&start_url)
+            .build_gtk(&fixed)?;
+
+        (chrome_view, content_view, fixed)
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let (chrome_view, content_view) = {
+        let chrome_view = WebViewBuilder::new()
+            .with_bounds(wry::Rect {
+                position: LogicalPosition::new(0.0, 0.0).into(),
+                size: LogicalSize::new(size.width, CHROME_HEIGHT).into(),
+            })
+            .with_html(CHROME_HTML)
+            .with_ipc_handler(ipc_handler)
+            .build_as_child(&window)?;
+
+        let content_view = WebViewBuilder::new()
+            .with_bounds(wry::Rect {
+                position: LogicalPosition::new(0.0, CHROME_HEIGHT).into(),
+                size: LogicalSize::new(size.width, (size.height - CHROME_HEIGHT).max(0.0)).into(),
+            })
+            .with_back_forward_navigation_gestures(true)
+            .with_url(&start_url)
+            .build_as_child(&window)?;
+
+        (chrome_view, content_view)
+    };
+
+    let content_view = Rc::new(RefCell::new(content_view));
+
+    sync_chrome(&chrome_view, &content_view.borrow(), &start_target);
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match event {
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                *control_flow = ControlFlow::Exit;
+            }
+            Event::WindowEvent { event: WindowEvent::Resized(new_size), .. } => {
+                let logical = new_size.to_logical::<f64>(window.scale_factor());
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = &fixed; // keep container alive; positions set via set_bounds below
+                }
+                let _ = chrome_view.set_bounds(wry::Rect {
+                    position: LogicalPosition::new(0.0, 0.0).into(),
+                    size: LogicalSize::new(logical.width, CHROME_HEIGHT).into(),
+                });
+                let _ = content_view.borrow().set_bounds(wry::Rect {
+                    position: LogicalPosition::new(0.0, CHROME_HEIGHT).into(),
+                    size: LogicalSize::new(logical.width, (logical.height - CHROME_HEIGHT).max(0.0)).into(),
+                });
+            }
+            Event::UserEvent(msg) => {
+                let view = content_view.borrow();
+                match msg {
+                    ChromeMsg::Navigate(raw) => {
+                        let target = normalize_address(&raw);
+                        let url = if target == "about:home" {
+                            data_url_for(&home_page)
+                        } else {
+                            target
+                        };
+                        let _ = view.load_url(&url);
+                    }
+                    ChromeMsg::Back => {
+                        let _ = view.evaluate_script("history.back()");
+                    }
+                    ChromeMsg::Forward => {
+                        let _ = view.evaluate_script("history.forward()");
+                    }
+                    ChromeMsg::Reload => {
+                        let _ = view.evaluate_script("location.reload()");
+                    }
+                    ChromeMsg::Home => {
+                        let _ = view.load_url(&data_url_for(&home_page));
+                    }
+                }
+                drop(view);
+                poll_and_sync_chrome(&chrome_view, &content_view.borrow());
+            }
+            _ => {}
+        }
+    });
 }

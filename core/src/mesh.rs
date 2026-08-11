@@ -58,53 +58,103 @@ fn get_real_interface() -> Option<String> {
     }
 }
 
-/// Windows equivalent of the Linux function above: picks the best
-/// candidate physical adapter, explicitly skipping known VPN/tunnel-style
-/// virtual adapters by their driver description (e.g. Cloudflare WARP's
-/// is literally named "Cloudflare WARP Interface Tunnel" in
-/// GetIfEntry2/description() -- the same signal the Linux path filters on
-/// by interface name). Windows Defender/other VPN clients that don't
-/// expose a scriptable exclusion mechanism (unlike WARP's own `warp-cli`
-/// on Linux/macOS, which has no equivalent in WARP's Windows GUI client)
-/// are exactly the case this exists to work around: rather than relying
-/// on the VPN cooperating, the mesh routes around it at the socket level.
+/// Substance-free description of one candidate network interface, used by
+/// `pick_real_interface` below -- kept independent of `netconfig_rs`'s own
+/// types so the selection *logic* can be unit-tested on any platform,
+/// with the real Windows-only enumeration code (`get_real_interface`)
+/// just building this from `netconfig_rs::list_interfaces()` and handing
+/// it off. Deliberately NOT `#[cfg(target_os = "windows")]`-gated (unlike
+/// the enumeration code that builds it) so `pick_real_interface`'s
+/// selection logic -- including the fix for the "self-STUN never
+/// resolves on Windows" bug -- has real unit test coverage that runs on
+/// every platform's CI, not just a Windows runner this project doesn't
+/// have.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone)]
+struct InterfaceCandidate {
+    index: u32,
+    name: String,
+    description: String,
+    ipv4_addrs: Vec<Ipv4Addr>,
+}
+
+/// Markers that identify a VPN/tunnel-style virtual adapter by its driver
+/// description (e.g. Cloudflare WARP's is literally named "Cloudflare
+/// WARP Interface Tunnel" in GetIfEntry2/description()). Windows
+/// Defender/other VPN clients that don't expose a scriptable exclusion
+/// mechanism (unlike WARP's own `warp-cli` on Linux/macOS, which has no
+/// equivalent in WARP's Windows GUI client) are exactly the case this
+/// exists to work around: rather than relying on the VPN cooperating,
+/// the mesh routes around it at the socket level.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const VPN_DESCRIPTION_MARKERS: &[&str] = &[
+    "cloudflare warp",
+    "wireguard",
+    "openvpn",
+    "tap-windows",
+    "wintun",
+    "nordlynx",
+    "tunnelbear",
+];
+
+/// Pure selection logic, factored out of `get_real_interface` so it can
+/// be exercised by unit tests without needing real Windows adapters.
+/// Picks the best candidate physical adapter out of `candidates`,
+/// skipping known VPN/tunnel-style virtual adapters and (critically) our
+/// own mesh TUN adapter.
 ///
-/// Returns the winning interface's index (what IP_UNICAST_IF needs) and a
-/// human-readable label for logging.
-#[cfg(target_os = "windows")]
-fn get_real_interface() -> Option<(u32, String)> {
-    use netconfig_rs::sys::InterfaceExt;
-
-    const VPN_DESCRIPTION_MARKERS: &[&str] = &[
-        "cloudflare warp",
-        "wireguard",
-        "openvpn",
-        "tap-windows",
-        "wintun",
-        "nordlynx",
-        "tunnelbear",
-    ];
-
-    let interfaces = netconfig_rs::list_interfaces().ok()?;
+/// `my_virtual_ip` is the mesh's own configured virtual address, if
+/// known -- this is the authoritative way to exclude our *own* TUN
+/// adapter, which the description-based VPN markers and any name-prefix
+/// heuristic can both fail to catch. This is the fix for a real bug:
+/// tun-rs's Windows/wintun backend defaults an adapter's *driver
+/// description* to its dev name (e.g. "lanmesh0") when no separate
+/// description is given, which does NOT contain "wintun" -- so the
+/// description-based VPN_DESCRIPTION_MARKERS check silently fails to
+/// catch it, and Windows doesn't reliably preserve the requested adapter
+/// *name* either (it can surface as "Ethernet 3", "Local Area Connection
+/// 2", etc., depending on driver/Windows version -- a well-documented
+/// wintun/OpenVPN community annoyance, not something under this
+/// project's control). When that happened, the old name-prefix-only
+/// check (`starts_with("lanmesh")`) failed to exclude our own adapter,
+/// so the mesh ended up pinning its own UDP socket (and self-STUN
+/// probes) to its own virtual adapter, which has no real route to the
+/// internet -- every self-STUN attempt then timed out and retried
+/// forever, i.e. exactly the "public address never resolves" symptom
+/// this fixes. Matching on the address itself can never miss our own
+/// adapter or accidentally exclude a real NIC the way string-matching on
+/// name/description can, since our adapter is guaranteed to carry
+/// exactly `my_virtual_ip` (that's the address we asked tun-rs/wintun to
+/// assign it).
+///
+/// Returns the winning interface's index (what IP_UNICAST_IF needs) and
+/// a human-readable label for logging.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn pick_real_interface(candidates: &[InterfaceCandidate], my_virtual_ip: Option<Ipv4Addr>) -> Option<(u32, String)> {
     let mut best: Option<(u32, String)> = None;
-    for iface in interfaces {
-        let Ok(index) = iface.index() else { continue };
-        let Ok(addresses) = iface.addresses() else { continue };
+    for iface in candidates {
         // Only interested in adapters that actually have an IPv4 address
         // (rules out disabled/unconfigured adapters without needing a
         // separate "is this adapter up" check).
-        if !addresses.iter().any(|a| a.addr().is_ipv4()) {
+        if iface.ipv4_addrs.is_empty() {
             continue;
         }
-        let description = iface.description().unwrap_or_default().to_lowercase();
-        let name = iface.name().unwrap_or_else(|_| format!("if{index}"));
+        if let Some(my_ip) = my_virtual_ip {
+            if iface.ipv4_addrs.contains(&my_ip) {
+                continue; // this is our own mesh TUN adapter
+            }
+        }
+        let description = iface.description.to_lowercase();
         if VPN_DESCRIPTION_MARKERS.iter().any(|marker| description.contains(marker)) {
             continue; // explicitly excluded, e.g. Cloudflare WARP
         }
-        // Also skip loopback and our own virtual mesh adapter by name, in
-        // case a future run reuses the same process before the old
-        // adapter is fully torn down.
-        if name.eq_ignore_ascii_case("loopback") || name.to_lowercase().starts_with("lanmesh") {
+        // Secondary, best-effort heuristics kept as defense-in-depth for
+        // cases the address check above can't cover (e.g. querying
+        // before the mesh's own adapter has been assigned its address
+        // yet, or a stale adapter left over from a previous run) --
+        // deliberately NOT relied on as the sole signal anymore.
+        let name_lower = iface.name.to_lowercase();
+        if name_lower == "loopback" || name_lower.starts_with("lanmesh") {
             continue;
         }
         // First non-excluded candidate wins; if multiple physical NICs
@@ -114,13 +164,48 @@ fn get_real_interface() -> Option<(u32, String)> {
         // strictly better than picking whatever the VPN's route
         // rewriting would otherwise cause the OS to choose.
         if best.is_none() {
-            best = Some((index, name));
+            best = Some((iface.index, iface.name.clone()));
         }
     }
     best
 }
 
-fn create_udp_socket(listen_port: u16) -> std::io::Result<UdpSocket> {
+/// Windows equivalent of the Linux `get_real_interface` above: enumerates
+/// real system network interfaces via `netconfig_rs` and delegates the
+/// actual selection to `pick_real_interface` (see its doc comment for the
+/// full rationale, especially around why `my_virtual_ip` matters).
+#[cfg(target_os = "windows")]
+fn get_real_interface(my_virtual_ip: Option<Ipv4Addr>) -> Option<(u32, String)> {
+    use netconfig_rs::sys::InterfaceExt;
+
+    let interfaces = netconfig_rs::list_interfaces().ok()?;
+    let candidates: Vec<InterfaceCandidate> = interfaces
+        .into_iter()
+        .filter_map(|iface| {
+            let index = iface.index().ok()?;
+            let addresses = iface.addresses().ok()?;
+            let ipv4_addrs: Vec<Ipv4Addr> = addresses
+                .iter()
+                .filter_map(|a| match a.addr() {
+                    std::net::IpAddr::V4(v4) => Some(v4),
+                    _ => None,
+                })
+                .collect();
+            Some(InterfaceCandidate {
+                index,
+                name: iface.name().unwrap_or_else(|_| format!("if{index}")),
+                description: iface.description().unwrap_or_default(),
+                ipv4_addrs,
+            })
+        })
+        .collect();
+    pick_real_interface(&candidates, my_virtual_ip)
+}
+
+fn create_udp_socket(
+    listen_port: u16,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] my_virtual_ip: Option<Ipv4Addr>,
+) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
     socket.set_reuse_address(true)?;
     #[cfg(target_os = "linux")]
@@ -136,7 +221,7 @@ fn create_udp_socket(listen_port: u16) -> std::io::Result<UdpSocket> {
     }
     #[cfg(target_os = "windows")]
     {
-        if let Some((index, name)) = get_real_interface() {
+        if let Some((index, name)) = get_real_interface(my_virtual_ip) {
             match bind_socket_to_interface_windows(&socket, index) {
                 Ok(()) => log(&format!("UDP socket bound to interface: {name} (index {index})")),
                 Err(e) => log(&format!(
@@ -322,12 +407,29 @@ impl MeshState {
             return None; // gossip about ourselves, bouncing back around -- ignore
         }
         if let Some(existing) = self.get_peer(&entry.virtual_ip) {
+            // Track whether the name is *actually* changing before
+            // overwriting it -- this matters for the placeholder-name
+            // case (see learn_peer_from_ping): a peer we first heard from
+            // via an unsolicited PING gets a "peer-<ip>" placeholder name
+            // that only gets corrected once gossip about them arrives.
+            // If that gossip doesn't also carry a *fresher* address (very
+            // common: we already know their current address just fine,
+            // gossip is only telling us their real name), the address
+            // branch below never fires and domain names would otherwise
+            // silently keep showing the stale placeholder forever.
+            let name_changed = !entry.name.is_empty() && existing.name() != entry.name;
             existing.set_name(&entry.name);
             if existing.observe_epoch(entry.addr, entry.epoch_secs) {
                 return Some(GossipOutcome::AddressUpdated {
                     virtual_ip: entry.virtual_ip,
                     name: existing.name(),
                     addr: entry.addr,
+                });
+            }
+            if name_changed {
+                return Some(GossipOutcome::NameUpdated {
+                    virtual_ip: entry.virtual_ip,
+                    name: existing.name(),
                 });
             }
             return None;
@@ -344,6 +446,41 @@ impl MeshState {
             addr: entry.addr,
         })
     }
+
+    /// Applies one *service*-announcement gossip entry (see
+    /// `GossipEntry::is_service`) to our local peer table: merges the
+    /// service into the named peer's advertised-services list, creating
+    /// the peer first (from the entry's own address/epoch) if this is
+    /// somehow the first we've heard of them at all. Returns Some
+    /// describing what happened if it's worth logging/re-syncing domain
+    /// names over, None if it was a no-op (service already known
+    /// unchanged, entry about ourselves, or the mesh is at its cap).
+    fn apply_gossip_service(&self, entry: &GossipEntry) -> Option<GossipOutcome> {
+        if entry.virtual_ip == self.my_virtual_ip {
+            return None; // a service of ours, bounced back around via gossip -- ignore
+        }
+        let peer = match self.get_peer(&entry.virtual_ip) {
+            Some(peer) => peer,
+            None => {
+                if self.peer_count() >= MAX_PEERS {
+                    return None;
+                }
+                let peer = Arc::new(Peer::from_gossip(entry.virtual_ip, &entry.name, entry.addr, entry.epoch_secs));
+                self.peers.write().unwrap().insert(entry.virtual_ip, peer.clone());
+                peer
+            }
+        };
+        if peer.observe_service(&entry.service_name, entry.service_port) {
+            Some(GossipOutcome::ServiceAnnounced {
+                virtual_ip: entry.virtual_ip,
+                peer_name: peer.name(),
+                service_name: entry.service_name.clone(),
+                port: entry.service_port,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// Rebuilds the full local-domain-name mapping (ourselves + every known
@@ -356,11 +493,8 @@ fn refresh_domain_names(state: &MeshState) {
     if !state.sync_hosts_file && state.dns_table.is_none() {
         return; // neither mechanism enabled -- nothing to do
     }
-    let mut raw: Vec<(String, Ipv4Addr)> = vec![(state.my_name.clone(), state.my_virtual_ip)];
-    for peer in state.peers_snapshot() {
-        raw.push((peer.name(), peer.virtual_ip));
-    }
-    let entries = hosts::build_entries(&state.domain_suffix, &raw);
+    let infos = build_domain_infos(state);
+    let entries = hosts::build_entries_with_services(&state.domain_suffix, &infos);
 
     if state.sync_hosts_file {
         match hosts::sync(&entries) {
@@ -374,11 +508,49 @@ names like 'alice.{}' instead of raw virtual IPs.",
         }
     }
     if let Some(table) = &state.dns_table {
-        let flat: Vec<(String, Ipv4Addr)> = entries.into_iter().map(|e| (e.hostname, e.virtual_ip)).collect();
-        dns::update_table(table, flat);
+        let dns_entries: Vec<dns::DnsEntry> = entries
+            .into_iter()
+            .map(|e| dns::DnsEntry {
+                hostname: e.hostname,
+                virtual_ip: e.virtual_ip,
+                is_peer_root: e.is_peer_root,
+            })
+            .collect();
+        dns::update_table(table, dns_entries);
     }
 }
 
+/// Builds the (name, ip, services) picture for ourselves plus every known
+/// peer, for `hosts::build_entries_with_services` to expand into actual
+/// hostnames. Our own services come straight from the live config (we
+/// don't gossip to ourselves); peers' services come from whatever
+/// service-announcement gossip has arrived so far.
+fn build_domain_infos(state: &MeshState) -> Vec<hosts::PeerDomainInfo> {
+    let my_services: Vec<(String, u16)> = state
+        .config
+        .lock()
+        .unwrap()
+        .services
+        .iter()
+        .map(|s| (s.name.clone(), s.port))
+        .collect();
+
+    let mut infos = vec![hosts::PeerDomainInfo {
+        name: state.my_name.clone(),
+        virtual_ip: state.my_virtual_ip,
+        services: my_services,
+    }];
+    for peer in state.peers_snapshot() {
+        infos.push(hosts::PeerDomainInfo {
+            name: peer.name(),
+            virtual_ip: peer.virtual_ip,
+            services: peer.services(),
+        });
+    }
+    infos
+}
+
+#[derive(Debug)]
 enum GossipOutcome {
     NewPeer {
         virtual_ip: Ipv4Addr,
@@ -389,6 +561,16 @@ enum GossipOutcome {
         virtual_ip: Ipv4Addr,
         name: String,
         addr: SocketAddr,
+    },
+    NameUpdated {
+        virtual_ip: Ipv4Addr,
+        name: String,
+    },
+    ServiceAnnounced {
+        virtual_ip: Ipv4Addr,
+        peer_name: String,
+        service_name: String,
+        port: u16,
     },
 }
 
@@ -420,30 +602,41 @@ fn persist_peer_addr(state: &MeshState, virtual_ip: Ipv4Addr, name: &str, addr: 
 }
 
 /// Builds the gossip entries describing everything we currently know:
-/// every peer in our table, plus an entry for ourselves if we've
-/// successfully self-STUN'd at least once (so 2+-hop peers can learn how
-/// to reach us, not just the peers we've directly exchanged addresses
-/// with).
+/// every peer in our table (plus one service-announcement entry per
+/// service we've heard they advertise, so services propagate multi-hop
+/// exactly like addresses do), and an entry for ourselves -- plus our own
+/// configured services -- if we've successfully self-STUN'd at least once
+/// (so 2+-hop peers can learn how to reach us, not just the peers we've
+/// directly exchanged addresses with).
 fn build_local_gossip_entries(state: &MeshState) -> Vec<GossipEntry> {
-    let mut entries: Vec<GossipEntry> = state
-        .peers_snapshot()
-        .iter()
-        .map(|p| GossipEntry {
-            virtual_ip: p.virtual_ip,
-            name: p.name(),
-            addr: p.current_send_addr().unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
-            epoch_secs: p.confirmed_epoch(),
-        })
-        .filter(|e| e.addr.port() != 0)
-        .collect();
+    let mut entries: Vec<GossipEntry> = Vec::new();
+
+    for p in state.peers_snapshot() {
+        let Some(addr) = p.current_send_addr() else { continue };
+        if addr.port() == 0 {
+            continue;
+        }
+        let epoch = p.confirmed_epoch();
+        let name = p.name();
+        entries.push(GossipEntry::peer(p.virtual_ip, &name, addr, epoch));
+        for (service_name, port) in p.services() {
+            entries.push(GossipEntry::service(p.virtual_ip, &name, addr, epoch, service_name, port));
+        }
+    }
 
     if let Some((addr, epoch)) = *state.my_public_addr.lock().unwrap() {
-        entries.push(GossipEntry {
-            virtual_ip: state.my_virtual_ip,
-            name: state.my_name.clone(),
-            addr,
-            epoch_secs: epoch,
-        });
+        entries.push(GossipEntry::peer(state.my_virtual_ip, &state.my_name, addr, epoch));
+        let my_services = state.config.lock().unwrap().services.clone();
+        for service in my_services {
+            entries.push(GossipEntry::service(
+                state.my_virtual_ip,
+                &state.my_name,
+                addr,
+                epoch,
+                service.name,
+                service.port,
+            ));
+        }
     }
     entries
 }
@@ -543,7 +736,7 @@ impl MeshHandle {
         #[cfg(target_os = "windows")]
         {
             if self.state.config.lock().unwrap().me.dns_auto_configure {
-                if let Some((_, iface_name)) = get_real_interface() {
+                if let Some((_, iface_name)) = get_real_interface(Some(self.state.my_virtual_ip)) {
                     dns::try_undo_auto_configure(&iface_name);
                 }
             }
@@ -617,23 +810,70 @@ impl MeshHandle {
         refresh_domain_names(&self.state);
     }
 
-    /// Point-in-time view of this machine's local mesh domain names
-    /// (itself plus every currently-known peer), for the GUI's domains
-    /// screen and the "open in browser" shortcut.
-    pub fn domain_snapshot(&self) -> Vec<(String, Ipv4Addr)> {
-        let cfg = self.state.config.lock().unwrap();
-        let suffix = cfg.me.domain_suffix.clone();
-        drop(cfg);
-        let mut raw: Vec<(String, Ipv4Addr)> =
-            vec![(self.state.my_name.clone(), self.state.my_virtual_ip)];
-        for peer in self.state.peers_snapshot() {
-            raw.push((peer.name(), peer.virtual_ip));
+    /// Adds (or updates the port of) a service *we* host, taking effect
+    /// immediately in the running mesh -- it's included in the very next
+    /// gossip burst (or right away, since this also nudges an immediate
+    /// re-sync of domain names locally) and persisted to mesh.toml so it
+    /// survives a restart. Used by the GUI's "add service" flow.
+    pub fn add_service_live(&self, name: &str, port: u16) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
         }
-        hosts::build_entries(&suffix, &raw)
+        let mut cfg = self.state.config.lock().unwrap();
+        if let Some(existing) = cfg.services.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
+            existing.port = port;
+        } else {
+            cfg.services.push(crate::config::ServiceConfig {
+                name: name.to_string(),
+                port,
+            });
+        }
+        let _ = cfg.save();
+        drop(cfg);
+        refresh_domain_names(&self.state);
+    }
+
+    /// Removes a service we host by name (case-insensitive). No-op if it
+    /// wasn't configured. Takes effect immediately and persists.
+    pub fn remove_service_live(&self, name: &str) {
+        let mut cfg = self.state.config.lock().unwrap();
+        let before = cfg.services.len();
+        cfg.services.retain(|s| !s.name.eq_ignore_ascii_case(name));
+        if cfg.services.len() != before {
+            let _ = cfg.save();
+        }
+        drop(cfg);
+        refresh_domain_names(&self.state);
+    }
+
+    /// Point-in-time view of this machine's local mesh domain names
+    /// (itself plus every currently-known peer and their advertised
+    /// services), for the GUI's Domains screen and the "open in browser"
+    /// shortcut.
+    pub fn domain_snapshot(&self) -> Vec<DomainNameEntry> {
+        let suffix = self.state.config.lock().unwrap().me.domain_suffix.clone();
+        let infos = build_domain_infos(&self.state);
+        hosts::build_entries_with_services(&suffix, &infos)
             .into_iter()
-            .map(|e| (e.hostname, e.virtual_ip))
+            .map(|e| DomainNameEntry {
+                hostname: e.hostname,
+                virtual_ip: e.virtual_ip,
+                is_peer_root: e.is_peer_root,
+                port: e.port,
+            })
             .collect()
     }
+}
+
+/// UI-friendly view of one resolvable local domain name -- either a
+/// peer's own root name, or a named service hung off one.
+#[derive(Clone, Debug)]
+pub struct DomainNameEntry {
+    pub hostname: String,
+    pub virtual_ip: Ipv4Addr,
+    pub is_peer_root: bool,
+    pub port: Option<u16>,
 }
 
 /// Starts the mesh (virtual adapter, UDP transport, and all background
@@ -703,7 +943,7 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
                     }
                     #[cfg(target_os = "windows")]
                     {
-                        if let Some((_, iface_name)) = get_real_interface() {
+                        if let Some((_, iface_name)) = get_real_interface(Some(my_virtual_ip)) {
                             if let Err(e) = dns::try_auto_configure_system(&iface_name, dns_port) {
                                 log(&format!("Warning: DNS auto-configure failed: {e}"));
                             }
@@ -747,7 +987,11 @@ On Windows this needs Administrator and wintun.dll next to the executable."
     let dev = Arc::new(dev);
 
     // ---- Set up the UDP transport socket ----
-    let sock = create_udp_socket(listen_port)?;
+    // Passing our own virtual IP lets get_real_interface() (Windows only)
+    // authoritatively exclude the TUN adapter we just brought up above,
+    // regardless of what name/description Windows happens to report for
+    // it -- see get_real_interface()'s doc comment for why that matters.
+    let sock = create_udp_socket(listen_port, Some(my_virtual_ip))?;
     log(&format!("Listening on UDP 0.0.0.0:{}", listen_port));
     let sock = Arc::new(sock);
     sock.set_read_timeout(Some(RECV_LOOP_TIMEOUT))?;
@@ -909,7 +1153,12 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                     }
                     proto::TYPE_GOSSIP => {
                         for entry in gossip::parse_payload(payload) {
-                            if let Some(outcome) = state.apply_gossip_entry(&entry) {
+                            let outcome = if entry.is_service() {
+                                state.apply_gossip_service(&entry)
+                            } else {
+                                state.apply_gossip_entry(&entry)
+                            };
+                            if let Some(outcome) = outcome {
                                 match outcome {
                                     GossipOutcome::NewPeer { virtual_ip, name, addr } => {
                                         log(&format!(
@@ -923,6 +1172,38 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                                             "Updated peer '{name}' ({virtual_ip}) address via gossip -> {addr}"
                                         ));
                                         persist_peer_addr(&state, virtual_ip, &name, addr);
+                                        refresh_domain_names(&state);
+                                    }
+                                    GossipOutcome::NameUpdated { virtual_ip, name } => {
+                                        // Address was already current (most
+                                        // commonly: we learned this peer
+                                        // from their own unsolicited PING
+                                        // and gave them a placeholder name
+                                        // -- see learn_peer_from_ping) --
+                                        // only the display name changed.
+                                        // Domain names (hosts file/DNS)
+                                        // still need refreshing so the
+                                        // placeholder doesn't linger
+                                        // forever; the on-disk peer
+                                        // address entry doesn't need
+                                        // rewriting since it's unchanged,
+                                        // but its name should match too.
+                                        log(&format!(
+                                            "Updated peer name via gossip: now known as '{name}' ({virtual_ip})"
+                                        ));
+                                        if let Some(peer) = state.get_peer(&virtual_ip) {
+                                            if let Some(addr) = peer.current_send_addr() {
+                                                persist_peer_addr(&state, virtual_ip, &name, addr);
+                                            }
+                                        }
+                                        refresh_domain_names(&state);
+                                    }
+                                    GossipOutcome::ServiceAnnounced { virtual_ip, peer_name, service_name, port } => {
+                                        log(&format!(
+                                            "Discovered service '{service_name}' on '{peer_name}' ({virtual_ip}) via gossip -> port {port} \
+(reachable as {service_name}.<{peer_name}'s mesh name>.{})",
+                                            state.domain_suffix
+                                        ));
                                         refresh_domain_names(&state);
                                     }
                                 }
@@ -1076,9 +1357,9 @@ pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()
         return Ok(());
     }
 
-    let sock = create_udp_socket(config.me.listen_port)?;
-    sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     let my_virtual_ip = config.me.virtual_ip;
+    let sock = create_udp_socket(config.me.listen_port, Some(my_virtual_ip))?;
+    sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 
     struct Stats {
         name: String,
@@ -1209,5 +1490,263 @@ fn log_peer_summary(state: &MeshState) {
             status,
             via
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::MeConfig;
+
+    /// Bare `MeshState` for exercising the gossip-application logic in
+    /// isolation, without any real sockets/threads/TUN device -- those
+    /// are only ever created inside `start()`, which these tests don't
+    /// call.
+    fn test_state() -> MeshState {
+        let cipher = Cipher::from_psk_b64(&Cipher::generate_psk_b64()).unwrap();
+        let config = Config {
+            me: MeConfig {
+                name: "me".to_string(),
+                virtual_ip: "10.0.0.1".parse().unwrap(),
+                prefix: 24,
+                listen_port: 12345,
+                psk: String::new(),
+                mtu: 1400,
+                domain_suffix: "mesh".to_string(),
+                sync_hosts_file: false,
+                dns_server: false,
+                dns_port: 53,
+                dns_auto_configure: false,
+            },
+            peers: Vec::new(),
+            services: Vec::new(),
+        };
+        MeshState {
+            cipher,
+            my_virtual_ip: config.me.virtual_ip,
+            my_name: config.me.name.clone(),
+            broadcast_addr: config.broadcast_addr(),
+            peers: RwLock::new(HashMap::new()),
+            my_public_addr: Mutex::new(None),
+            self_stun: SelfStunWaiter::new(),
+            domain_suffix: config.me.domain_suffix.clone(),
+            sync_hosts_file: config.me.sync_hosts_file,
+            dns_table: None,
+            dns_handle: Mutex::new(None),
+            config: Mutex::new(config),
+        }
+    }
+
+    #[test]
+    fn learn_peer_from_ping_then_gossip_name_only_update_is_reported() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.2".parse().unwrap();
+        let addr: SocketAddr = "203.0.113.5:4000".parse().unwrap();
+
+        // Step 1: peer reaches us first via an unsolicited PING -- gets a
+        // placeholder name (mirrors the receive loop's real behavior).
+        let outcome = state.learn_peer_from_ping(peer_ip, addr);
+        assert!(matches!(outcome, Some(GossipOutcome::NewPeer { .. })));
+        assert_eq!(state.get_peer(&peer_ip).unwrap().name(), "peer-10.0.0.2");
+
+        // Step 2: gossip arrives with their real name, but the SAME
+        // address/epoch we already have (a very common case -- we
+        // already know how to reach them fine, gossip is only useful
+        // here for the name). Before the fix, this returned None and the
+        // placeholder name would never get corrected in domain names.
+        let entry = GossipEntry::peer(peer_ip, "alice", addr, now_secs() as u32);
+        // Bump epoch so it's not silently ignored as stale, but keep the
+        // address identical to isolate the name-only-change path.
+        let entry = GossipEntry {
+            epoch_secs: state.get_peer(&peer_ip).unwrap().confirmed_epoch(),
+            ..entry
+        };
+        let outcome = state.apply_gossip_entry(&entry);
+        match outcome {
+            Some(GossipOutcome::NameUpdated { virtual_ip, name }) => {
+                assert_eq!(virtual_ip, peer_ip);
+                assert_eq!(name, "alice");
+            }
+            other => panic!("expected NameUpdated, got {other:?}"),
+        }
+        assert_eq!(state.get_peer(&peer_ip).unwrap().name(), "alice");
+    }
+
+    #[test]
+    fn gossip_with_fresher_address_reports_address_updated_not_name_updated() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.3".parse().unwrap();
+        let old_addr: SocketAddr = "203.0.113.5:4000".parse().unwrap();
+        state.learn_peer_from_ping(peer_ip, old_addr);
+
+        let new_addr: SocketAddr = "203.0.113.5:5000".parse().unwrap();
+        let fresher_epoch = state.get_peer(&peer_ip).unwrap().confirmed_epoch() + 10;
+        let entry = GossipEntry::peer(peer_ip, "bob", new_addr, fresher_epoch);
+        match state.apply_gossip_entry(&entry) {
+            Some(GossipOutcome::AddressUpdated { virtual_ip, name, addr }) => {
+                assert_eq!(virtual_ip, peer_ip);
+                assert_eq!(name, "bob");
+                assert_eq!(addr, new_addr);
+            }
+            other => panic!("expected AddressUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gossip_with_unchanged_name_and_stale_address_is_a_true_noop() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.4".parse().unwrap();
+        let addr: SocketAddr = "203.0.113.5:4000".parse().unwrap();
+        state.learn_peer_from_ping(peer_ip, addr);
+        // First, give it a real name.
+        let epoch = state.get_peer(&peer_ip).unwrap().confirmed_epoch();
+        state.apply_gossip_entry(&GossipEntry::peer(peer_ip, "carol", addr, epoch));
+        assert_eq!(state.get_peer(&peer_ip).unwrap().name(), "carol");
+
+        // Same name, same (now-stale, lower-or-equal) epoch -- should be
+        // a genuine no-op, not reported as any kind of update.
+        let outcome = state.apply_gossip_entry(&GossipEntry::peer(peer_ip, "carol", addr, epoch));
+        assert!(outcome.is_none());
+    }
+
+    #[test]
+    fn apply_gossip_service_creates_unknown_peer_and_reports_announcement() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.5".parse().unwrap();
+        let addr: SocketAddr = "203.0.113.9:9000".parse().unwrap();
+        let entry = GossipEntry::service(peer_ip, "dave", addr, now_secs() as u32, "game", 25565);
+        match state.apply_gossip_service(&entry) {
+            Some(GossipOutcome::ServiceAnnounced { virtual_ip, peer_name, service_name, port }) => {
+                assert_eq!(virtual_ip, peer_ip);
+                assert_eq!(peer_name, "dave");
+                assert_eq!(service_name, "game");
+                assert_eq!(port, 25565);
+            }
+            other => panic!("expected ServiceAnnounced, got {other:?}"),
+        }
+        assert_eq!(state.get_peer(&peer_ip).unwrap().services(), vec![("game".to_string(), 25565)]);
+    }
+
+    #[test]
+    fn apply_gossip_service_is_noop_when_unchanged() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.6".parse().unwrap();
+        let addr: SocketAddr = "203.0.113.9:9000".parse().unwrap();
+        let entry = GossipEntry::service(peer_ip, "eve", addr, now_secs() as u32, "web", 8080);
+        assert!(state.apply_gossip_service(&entry).is_some());
+        assert!(state.apply_gossip_service(&entry).is_none());
+    }
+
+    #[test]
+    fn refresh_domain_names_includes_peer_root_and_service_subdomains() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.7".parse().unwrap();
+        let addr: SocketAddr = "203.0.113.9:9000".parse().unwrap();
+        state.learn_peer_from_ping(peer_ip, addr);
+        let epoch = state.get_peer(&peer_ip).unwrap().confirmed_epoch();
+        state.apply_gossip_entry(&GossipEntry::peer(peer_ip, "frank", addr, epoch));
+        state.apply_gossip_service(&GossipEntry::service(peer_ip, "frank", addr, epoch, "game", 25565));
+
+        let infos = build_domain_infos(&state);
+        let frank = infos.iter().find(|i| i.virtual_ip == peer_ip).unwrap();
+        assert_eq!(frank.name, "frank");
+        assert_eq!(frank.services, vec![("game".to_string(), 25565)]);
+    }
+
+    // ---- pick_real_interface: Windows self-STUN-never-resolves fix ----
+    //
+    // These exercise the pure interface-selection logic in isolation
+    // (see pick_real_interface's doc comment for the full story of the
+    // bug being fixed here). They run on every platform's CI, not just
+    // Windows, since the function itself has no OS dependency -- only
+    // the real enumeration wrapper around it (get_real_interface) is
+    // Windows-only.
+
+    fn candidate(index: u32, name: &str, description: &str, ipv4_addrs: &[&str]) -> InterfaceCandidate {
+        InterfaceCandidate {
+            index,
+            name: name.to_string(),
+            description: description.to_string(),
+            ipv4_addrs: ipv4_addrs.iter().map(|s| s.parse().unwrap()).collect(),
+        }
+    }
+
+    #[test]
+    fn picks_the_only_real_adapter() {
+        let candidates = vec![candidate(5, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"])];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, Some((5, "Ethernet".to_string())));
+    }
+
+    #[test]
+    fn excludes_own_tun_adapter_by_address_even_with_a_misleading_name_and_description() {
+        // Reproduces the exact real-world failure mode: our own mesh TUN
+        // adapter surfaces with neither a "lanmesh"-prefixed name NOR a
+        // "wintun"-containing description (both entirely plausible on
+        // real Windows installs -- see this function's doc comment) --
+        // only its known virtual IP identifies it as ours. Before the
+        // fix, this candidate would have been wrongly selected as the
+        // "real" interface, pinning the mesh's own UDP socket (and every
+        // self-STUN probe) to itself -- which has no route to the
+        // internet, so self-STUN would time out and retry forever.
+        let candidates = vec![
+            candidate(9, "Ethernet 3", "lanmesh0", &["10.66.0.1"]), // our own adapter, misleadingly named
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+        ];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, Some((3, "Wi-Fi".to_string())));
+    }
+
+    #[test]
+    fn falls_back_to_name_heuristic_when_virtual_ip_unknown() {
+        // If we don't yet know our own virtual IP (shouldn't normally
+        // happen at the point this is called in practice, but defence in
+        // depth), the legacy name-prefix heuristic still applies.
+        let candidates = vec![
+            candidate(9, "lanmesh0", "lanmesh0", &["10.66.0.1"]),
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+        ];
+        let picked = pick_real_interface(&candidates, None);
+        assert_eq!(picked, Some((3, "Wi-Fi".to_string())));
+    }
+
+    #[test]
+    fn excludes_cloudflare_warp_by_description() {
+        let candidates = vec![
+            candidate(9, "Ethernet 5", "Cloudflare WARP Interface Tunnel", &["100.96.0.5"]),
+            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
+        ];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, Some((3, "Ethernet".to_string())));
+    }
+
+    #[test]
+    fn excludes_adapters_with_no_ipv4_address() {
+        let candidates = vec![
+            candidate(9, "Disabled NIC", "Some Adapter", &[]),
+            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
+        ];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, Some((3, "Ethernet".to_string())));
+    }
+
+    #[test]
+    fn returns_none_when_only_our_own_adapter_and_vpns_are_present() {
+        let candidates = vec![
+            candidate(9, "lanmesh0", "lanmesh0", &["10.66.0.1"]),
+            candidate(4, "Ethernet 5", "Cloudflare WARP Interface Tunnel", &["100.96.0.5"]),
+        ];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, None);
+    }
+
+    #[test]
+    fn first_non_excluded_candidate_wins_when_multiple_real_nics_present() {
+        let candidates = vec![
+            candidate(2, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+        ];
+        let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
+        assert_eq!(picked, Some((2, "Ethernet".to_string())));
     }
 }

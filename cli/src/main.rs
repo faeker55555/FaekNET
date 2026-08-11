@@ -44,6 +44,15 @@ Usage:
                            everyone in your mesh
   lan_mesh domains         Show the local mesh domain name (<name>.<suffix>)
                            for yourself and every configured peer
+  lan_mesh add-service <name> <port>
+                           Advertise a named service you host (e.g. a game
+                           server) as a subdomain of your own mesh name --
+                           reachable as <service>.<yourname>.<suffix> once
+                           the mesh is running, gossiped automatically to
+                           everyone else
+  lan_mesh remove-service <name>
+                           Stop advertising a service
+  lan_mesh list-services   Show services you've configured
 
 Quickest way to connect with a friend:
   1. Both run `lan_mesh init` (one of you leaves the PSK prompt empty to
@@ -132,6 +141,7 @@ fn cmd_init() {
             dns_auto_configure: false,
         },
         peers: Vec::new(),
+        services: Vec::new(),
     };
     cfg.save().expect("failed to write mesh.toml");
     println!("\nSaved {}.", config::CONFIG_PATH);
@@ -329,16 +339,38 @@ fn cmd_domains() {
             return;
         }
     };
-    let mut raw: Vec<(String, Ipv4Addr)> = vec![(cfg.me.name.clone(), cfg.me.virtual_ip)];
+    let mut infos: Vec<hosts::PeerDomainInfo> = vec![hosts::PeerDomainInfo {
+        name: cfg.me.name.clone(),
+        virtual_ip: cfg.me.virtual_ip,
+        services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
+    }];
     for p in &cfg.peers {
-        raw.push((p.name.clone(), p.virtual_ip));
+        infos.push(hosts::PeerDomainInfo {
+            name: p.name.clone(),
+            virtual_ip: p.virtual_ip,
+            // Peers' *own* advertised services only become known once
+            // the mesh is actually running and gossip has delivered
+            // them -- mesh.toml never stores other peers' services, only
+            // our own. This static/offline listing can't show them; use
+            // the GUI's Domains screen (or a live status log) while the
+            // mesh is running for the full picture including those.
+            services: Vec::new(),
+        });
     }
-    let entries = hosts::build_entries(&cfg.me.domain_suffix, &raw);
+    let entries = hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos);
     println!("Local mesh domain names (suffix: '{}'):\n", cfg.me.domain_suffix);
     for e in &entries {
-        println!("  {:<28} -> {}", e.hostname, e.virtual_ip);
+        let port_note = e.port.map(|p| format!(" (port {p})")).unwrap_or_default();
+        println!("  {:<28} -> {}{}", e.hostname, e.virtual_ip, port_note);
     }
     println!();
+    if !cfg.services.is_empty() {
+        println!(
+            "(Peers' own advertised services aren't shown here -- they're only known once \
+the mesh is running and gossip has delivered them. Run `lan_mesh run` and check the \
+GUI's Domains screen, or the activity log, for the live picture.)\n"
+        );
+    }
     if cfg.me.sync_hosts_file {
         println!(
             "Hosts-file sync is ENABLED -- these names already work in any app on this \
@@ -352,17 +384,101 @@ fn cmd_domains() {
         println!(
             "Built-in DNS resolver is ENABLED on 127.0.0.1:{} -- point a device's DNS \
              settings at this machine's LAN/mesh IP to resolve these names from other \
-             devices too, not just this one.",
-            cfg.me.dns_port
+             devices too, not just this one. It also answers wildcard subdomains of any \
+             peer's own name (e.g. 'anything.alice.{}') automatically.",
+            cfg.me.dns_port, cfg.me.domain_suffix
         );
     } else {
         println!("Built-in DNS resolver is DISABLED in mesh.toml (dns_server = false).");
     }
 }
 
+fn cmd_add_service(name: &str, port_str: &str) {
+    let mut cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        eprintln!("Service name can't be empty.");
+        return;
+    }
+    let port: u16 = match port_str.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("Invalid port '{port_str}'.");
+            return;
+        }
+    };
+    if let Some(existing) = cfg.services.iter_mut().find(|s| s.name.eq_ignore_ascii_case(name)) {
+        existing.port = port;
+        println!("Updated service '{name}' -> port {port}.");
+    } else {
+        cfg.services.push(config::ServiceConfig {
+            name: name.to_string(),
+            port,
+        });
+        println!(
+            "Added service '{name}' -> port {port}. Once the mesh is running, it'll be \
+reachable as '{}.{}.{}' (and gossiped to the whole mesh automatically).",
+            hosts::sanitize_label(name),
+            hosts::sanitize_label(&cfg.me.name),
+            cfg.me.domain_suffix
+        );
+    }
+    cfg.save().expect("failed to write mesh.toml");
+    println!("Restart the mesh (or use the GUI's live \"add service\") for a running instance to pick this up.");
+}
+
+fn cmd_remove_service(name: &str) {
+    let mut cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            return;
+        }
+    };
+    let before = cfg.services.len();
+    cfg.services.retain(|s| !s.name.eq_ignore_ascii_case(name));
+    if cfg.services.len() == before {
+        println!("No service named '{name}' found.");
+        return;
+    }
+    cfg.save().expect("failed to write mesh.toml");
+    println!("Removed service '{name}'.");
+}
+
+fn cmd_list_services() {
+    let cfg = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Could not load {}: {e}", config::CONFIG_PATH);
+            return;
+        }
+    };
+    if cfg.services.is_empty() {
+        println!("No services configured. Use `lan_mesh add-service <name> <port>`.");
+        return;
+    }
+    for s in &cfg.services {
+        println!(
+            "  {} -> port {} (reachable as {}.{}.{})",
+            s.name,
+            s.port,
+            hosts::sanitize_label(&s.name),
+            hosts::sanitize_label(&cfg.me.name),
+            cfg.me.domain_suffix
+        );
+    }
+}
+
 fn cmd_run() {
     let cfg = match Config::load() {
         Ok(c) => c,
+
         Err(e) => {
             eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
             return;
@@ -392,6 +508,15 @@ fn main() {
         }
         Some("genkey") => cmd_genkey(),
         Some("domains") => cmd_domains(),
+        Some("add-service") => match (args.get(2), args.get(3)) {
+            (Some(name), Some(port)) => cmd_add_service(name, port),
+            _ => eprintln!("Usage: lan_mesh add-service <name> <port>"),
+        },
+        Some("remove-service") => match args.get(2) {
+            Some(name) => cmd_remove_service(name),
+            None => eprintln!("Usage: lan_mesh remove-service <name>"),
+        },
+        Some("list-services") => cmd_list_services(),
         Some("run") => cmd_run(),
         _ => print_usage(),
     }

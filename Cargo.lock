@@ -2136,6 +2136,7 @@ dependencies = [
 name = "lan_mesh_browser"
 version = "0.1.0"
 dependencies = [
+ "gtk",
  "lan_mesh_core",
  "serde",
  "serde_json",

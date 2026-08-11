@@ -44,6 +44,13 @@ pub struct Peer {
     /// Pending outstanding pings: sequence number -> time sent, so `pong`
     /// handling can compute an RTT and detect stale/duplicate replies.
     pub pending_pings: Mutex<std::collections::HashMap<u64, Instant>>,
+    /// Named services this peer has advertised via gossip (service name,
+    /// port), e.g. `[("game", 25565), ("voice", 7777)]`. Learned purely
+    /// from `TYPE_GOSSIP` service-announcement entries -- there's no
+    /// direct-configuration equivalent since services are always
+    /// self-advertised by the machine that hosts them, not something a
+    /// friend types in about someone else.
+    services: RwLock<Vec<(String, u16)>>,
 }
 
 impl Peer {
@@ -58,6 +65,7 @@ impl Peer {
             discovered_via_gossip: std::sync::atomic::AtomicBool::new(false),
             last_rtt_ms: AtomicI64::new(-1),
             pending_pings: Mutex::new(std::collections::HashMap::new()),
+            services: RwLock::new(Vec::new()),
         }
     }
 
@@ -76,6 +84,7 @@ impl Peer {
             discovered_via_gossip: std::sync::atomic::AtomicBool::new(true),
             last_rtt_ms: AtomicI64::new(-1),
             pending_pings: Mutex::new(std::collections::HashMap::new()),
+            services: RwLock::new(Vec::new()),
         }
     }
 
@@ -183,5 +192,83 @@ impl Peer {
         } else {
             Some(now_secs().saturating_sub(last))
         }
+    }
+
+    /// Current snapshot of this peer's advertised services.
+    pub fn services(&self) -> Vec<(String, u16)> {
+        self.services.read().unwrap().clone()
+    }
+
+    /// Merges in a service announcement learned via gossip: adds it if
+    /// new, updates the port if it changed, no-ops if already known and
+    /// unchanged. Returns true if the table actually changed (worth
+    /// logging/re-syncing domain names over).
+    pub fn observe_service(&self, service_name: &str, port: u16) -> bool {
+        if service_name.is_empty() {
+            return false;
+        }
+        let mut guard = self.services.write().unwrap();
+        if let Some(existing) = guard.iter_mut().find(|(name, _)| name.eq_ignore_ascii_case(service_name)) {
+            if existing.1 == port {
+                return false;
+            }
+            existing.1 = port;
+            return true;
+        }
+        guard.push((service_name.to_string(), port));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::PeerConfig;
+
+    fn dummy_peer() -> Peer {
+        Peer::new(&PeerConfig {
+            name: "alice".to_string(),
+            virtual_ip: "10.66.0.2".parse().unwrap(),
+            public_ip: "203.0.113.1".to_string(),
+            public_port: 12345,
+        })
+    }
+
+    #[test]
+    fn observe_service_adds_new() {
+        let p = dummy_peer();
+        assert!(p.observe_service("game", 25565));
+        assert_eq!(p.services(), vec![("game".to_string(), 25565)]);
+    }
+
+    #[test]
+    fn observe_service_noop_when_unchanged() {
+        let p = dummy_peer();
+        assert!(p.observe_service("game", 25565));
+        assert!(!p.observe_service("game", 25565)); // no change second time
+        assert_eq!(p.services().len(), 1);
+    }
+
+    #[test]
+    fn observe_service_updates_changed_port() {
+        let p = dummy_peer();
+        p.observe_service("game", 25565);
+        assert!(p.observe_service("game", 25566));
+        assert_eq!(p.services(), vec![("game".to_string(), 25566)]);
+    }
+
+    #[test]
+    fn observe_service_ignores_empty_name() {
+        let p = dummy_peer();
+        assert!(!p.observe_service("", 80));
+        assert!(p.services().is_empty());
+    }
+
+    #[test]
+    fn observe_service_is_case_insensitive_for_dedup() {
+        let p = dummy_peer();
+        p.observe_service("Game", 1);
+        assert!(!p.observe_service("game", 1)); // same service, different case -- no dup
+        assert_eq!(p.services().len(), 1);
     }
 }

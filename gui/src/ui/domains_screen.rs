@@ -1,11 +1,13 @@
 //! Local mesh domain names screen: shows every peer's `<name>.<suffix>`
-//! address, whether hosts-file sync / the built-in DNS resolver are
-//! enabled, and one-click shortcuts to open a name in the in-app browser
-//! (a separate `lan_mesh_browser` process -- see that crate's Cargo.toml
-//! for why it isn't an embedded egui panel).
+//! address plus any named subdomains (services) hosted under it, whether
+//! hosts-file sync / the built-in DNS resolver are enabled, a form for
+//! advertising your own services, and one-click shortcuts to open a name
+//! in the in-app browser (a separate `lan_mesh_browser` process -- see
+//! that crate's Cargo.toml for why it isn't an embedded egui panel).
 
 use eframe::egui;
 use lan_mesh_core::config::Config;
+use lan_mesh_core::mesh::DomainNameEntry;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
@@ -16,7 +18,7 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.add_space(16.0);
             ui.vertical(|ui| {
-                ui.set_width((ui.available_width() - 32.0).min(720.0));
+                ui.set_width((ui.available_width() - 32.0).min(760.0));
                 draw_content(app, ui);
             });
         });
@@ -33,8 +35,10 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
         ui.label(
             egui::RichText::new(format!(
                 "Every peer is reachable by name -- <peer>.{} -- instead of just a raw \
-                 virtual IP. No internet DNS involved; this is purely local to your mesh.",
-                cfg.me.domain_suffix
+                 virtual IP, and any named service they advertise gets its own subdomain \
+                 (e.g. game.alice.{}). No internet DNS involved; this is purely local to \
+                 your mesh.",
+                cfg.me.domain_suffix, cfg.me.domain_suffix
             ))
             .color(theme::TEXT_DIM)
             .size(11.0),
@@ -48,16 +52,19 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
             ui,
             "HOSTS FILE SYNC",
             cfg.me.sync_hosts_file,
-            "Every application on this machine can resolve mesh names -- no config needed.",
+            "Every application on this machine can resolve mesh names -- no config needed. \
+             Registered names only (no wildcard subdomains -- a hosts file can't do that).",
         );
         let dns_detail = if cfg.me.dns_server {
             format!(
-                "Listening on 127.0.0.1:{} -- point another device's DNS at this \
-                 machine's mesh IP to resolve names from it too.",
-                cfg.me.dns_port
+                "Listening on 127.0.0.1:{} -- point another device's DNS at this machine's \
+                 mesh IP to resolve names from it too. Also answers ANY subdomain of a \
+                 peer's own name (e.g. 'whatever.alice.{}') even if it was never \
+                 explicitly registered as a service.",
+                cfg.me.dns_port, cfg.me.domain_suffix
             )
         } else {
-            "Off. Enable in mesh.toml (dns_server = true) for subdomain support / \
+            "Off. Enable in mesh.toml (dns_server = true) for wildcard subdomain support / \
              resolving mesh names from other devices on your LAN."
                 .to_string()
         };
@@ -66,30 +73,94 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
 
-    let names = collect_names(app, &cfg);
+    let entries = collect_entries(app, &cfg);
 
-    section(ui, &format!("NAMES ({})", names.len()), |ui| {
-        if names.is_empty() {
+    section(ui, &format!("NAMES ({})", entries.len()), |ui| {
+        if entries.is_empty() {
             ui.label(egui::RichText::new("No peers yet.").color(theme::TEXT_DIM));
             return;
         }
-        for (name, ip, is_me) in &names {
-            ui.horizontal(|ui| {
-                ui.set_min_height(28.0);
-                let color = if *is_me { theme::TEAL } else { theme::TEXT_BRIGHT };
-                ui.label(egui::RichText::new(name).monospace().color(color).strong());
-                ui.label(egui::RichText::new(format!("-> {ip}")).monospace().color(theme::TEXT_DIM).size(11.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("OPEN IN BROWSER").clicked() {
-                        launch_browser(app, name);
-                    }
-                    if ui.button("COPY").clicked() {
-                        ui.ctx().copy_text(name.clone());
-                        app.show_toast(format!("Copied '{name}'"));
-                    }
-                });
-            });
+        for entry in &entries {
+            let is_me = entry.virtual_ip == cfg.me.virtual_ip;
+            draw_name_row(app, ui, entry, is_me);
             ui.add_space(2.0);
+        }
+    });
+
+    ui.add_space(14.0);
+
+    section(ui, "YOUR SERVICES", |ui| {
+        ui.label(
+            egui::RichText::new(
+                "Advertise something you host (a game server, a web dashboard, ...) as its \
+                 own subdomain of your mesh name. This is gossiped to the whole mesh \
+                 automatically -- no manual sharing needed once you're connected.",
+            )
+            .color(theme::TEXT_DIM)
+            .size(11.0),
+        );
+        ui.add_space(8.0);
+
+        if cfg.services.is_empty() {
+            ui.label(egui::RichText::new("No services advertised yet.").color(theme::TEXT_DIM).size(11.0));
+        } else {
+            for service in &cfg.services {
+                let hostname = format!(
+                    "{}.{}.{}",
+                    lan_mesh_core::hosts::sanitize_label(&service.name),
+                    lan_mesh_core::hosts::sanitize_label(&cfg.me.name),
+                    cfg.me.domain_suffix
+                );
+                ui.horizontal(|ui| {
+                    ui.set_min_height(24.0);
+                    ui.label(egui::RichText::new(&hostname).monospace().color(theme::TEAL));
+                    ui.label(
+                        egui::RichText::new(format!("port {}", service.port))
+                            .monospace()
+                            .color(theme::TEXT_DIM)
+                            .size(11.0),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("REMOVE").clicked() {
+                            remove_service(app, &service.name);
+                        }
+                    });
+                });
+            }
+        }
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(egui::RichText::new("ADD A SERVICE").color(theme::TEXT_DIM).size(11.0).strong());
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("NAME").color(theme::TEXT_DIM).size(10.5));
+            ui.add(
+                egui::TextEdit::singleline(&mut app.add_service_form.name)
+                    .desired_width(120.0)
+                    .hint_text("game"),
+            );
+            ui.label(egui::RichText::new("PORT").color(theme::TEXT_DIM).size(10.5));
+            ui.add(
+                egui::TextEdit::singleline(&mut app.add_service_form.port)
+                    .desired_width(70.0)
+                    .hint_text("25565"),
+            );
+            if ui.button("ADD").clicked() {
+                add_service(app);
+            }
+        });
+        if let Some(err) = &app.add_service_form.error {
+            ui.colored_label(theme::RED, err);
+        }
+        if !matches!(app.mode, AppMode::Running { .. }) {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("(Saved to mesh.toml now; takes effect once the mesh starts.)")
+                    .color(theme::TEXT_DIM)
+                    .size(10.0),
+            );
         }
     });
 
@@ -115,33 +186,122 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// Builds the (name, virtual_ip, is_self) list to display: prefers the
-/// live mesh's own view (accurate to the second) when running, falls
-/// back to reconstructing it from the static config when stopped/in
-/// setup so the screen is still useful before the mesh is started.
-fn collect_names(app: &App, cfg: &Config) -> Vec<(String, std::net::Ipv4Addr, bool)> {
+fn draw_name_row(app: &mut App, ui: &mut egui::Ui, entry: &DomainNameEntry, is_me: bool) {
+    ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
+        // Indent service subdomains slightly under their peer root so the
+        // hierarchy is visually obvious at a glance.
+        if !entry.is_peer_root {
+            ui.add_space(18.0);
+        }
+        let color = if is_me { theme::TEAL } else { theme::TEXT_BRIGHT };
+        let label = if entry.is_peer_root {
+            egui::RichText::new(&entry.hostname).monospace().color(color).strong()
+        } else {
+            egui::RichText::new(format!("↳ {}", entry.hostname)).monospace().color(theme::AMBER)
+        };
+        ui.label(label);
+        ui.label(egui::RichText::new(format!("-> {}", entry.virtual_ip)).monospace().color(theme::TEXT_DIM).size(11.0));
+        if let Some(port) = entry.port {
+            ui.label(egui::RichText::new(format!(":{port}")).monospace().color(theme::TEXT_DIM).size(11.0));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let target = match entry.port {
+                Some(port) => format!("{}:{}", entry.hostname, port),
+                None => entry.hostname.clone(),
+            };
+            if ui.button("OPEN IN BROWSER").clicked() {
+                launch_browser(app, &target);
+            }
+            if ui.button("COPY").clicked() {
+                ui.ctx().copy_text(entry.hostname.clone());
+                app.show_toast(format!("Copied '{}'", entry.hostname));
+            }
+        });
+    });
+}
+
+/// Builds the domain-name entry list to display: prefers the live mesh's
+/// own view (accurate to the second, includes gossip-learned peer
+/// services) when running, falls back to reconstructing it from the
+/// static config when stopped/in setup (own services only -- peers'
+/// services aren't known until the mesh actually runs and gossip
+/// delivers them) so the screen is still useful before the mesh starts.
+fn collect_entries(app: &App, cfg: &Config) -> Vec<DomainNameEntry> {
     if let AppMode::Running { handle, .. } = &app.mode {
-        return handle
-            .domain_snapshot()
-            .into_iter()
-            .map(|(name, ip)| {
-                let is_me = ip == cfg.me.virtual_ip;
-                (name, ip, is_me)
-            })
-            .collect();
+        return handle.domain_snapshot();
     }
 
-    let mut raw: Vec<(String, std::net::Ipv4Addr)> = vec![(cfg.me.name.clone(), cfg.me.virtual_ip)];
-    for p in &cfg.peers {
-        raw.push((p.name.clone(), p.virtual_ip));
-    }
-    lan_mesh_core::hosts::build_entries(&cfg.me.domain_suffix, &raw)
+    let infos = vec![lan_mesh_core::hosts::PeerDomainInfo {
+        name: cfg.me.name.clone(),
+        virtual_ip: cfg.me.virtual_ip,
+        services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
+    }]
+    .into_iter()
+    .chain(cfg.peers.iter().map(|p| lan_mesh_core::hosts::PeerDomainInfo {
+        name: p.name.clone(),
+        virtual_ip: p.virtual_ip,
+        services: Vec::new(),
+    }))
+    .collect::<Vec<_>>();
+
+    lan_mesh_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
         .into_iter()
-        .map(|e| {
-            let is_me = e.virtual_ip == cfg.me.virtual_ip;
-            (e.hostname, e.virtual_ip, is_me)
+        .map(|e| DomainNameEntry {
+            hostname: e.hostname,
+            virtual_ip: e.virtual_ip,
+            is_peer_root: e.is_peer_root,
+            port: e.port,
         })
         .collect()
+}
+
+fn add_service(app: &mut App) {
+    let name = app.add_service_form.name.trim().to_string();
+    if name.is_empty() {
+        app.add_service_form.error = Some("Service name can't be empty.".to_string());
+        return;
+    }
+    let Ok(port) = app.add_service_form.port.trim().parse::<u16>() else {
+        app.add_service_form.error = Some("Invalid port.".to_string());
+        return;
+    };
+
+    match &app.mode {
+        AppMode::Running { handle, .. } => {
+            handle.add_service_live(&name, port);
+            app.show_toast(format!("Service '{name}' added -- announcing to the mesh now."));
+        }
+        _ => {
+            if let Some(mut cfg) = app.current_config() {
+                if let Some(existing) = cfg.services.iter_mut().find(|s| s.name.eq_ignore_ascii_case(&name)) {
+                    existing.port = port;
+                } else {
+                    cfg.services.push(lan_mesh_core::config::ServiceConfig { name: name.clone(), port });
+                }
+                let _ = cfg.save();
+                app.show_toast(format!("Service '{name}' saved -- will announce once the mesh starts."));
+            }
+        }
+    }
+    app.add_service_form.name.clear();
+    app.add_service_form.port.clear();
+    app.add_service_form.error = None;
+}
+
+fn remove_service(app: &mut App, name: &str) {
+    match &app.mode {
+        AppMode::Running { handle, .. } => {
+            handle.remove_service_live(name);
+        }
+        _ => {
+            if let Some(mut cfg) = app.current_config() {
+                cfg.services.retain(|s| !s.name.eq_ignore_ascii_case(name));
+                let _ = cfg.save();
+            }
+        }
+    }
+    app.show_toast(format!("Removed service '{name}'."));
 }
 
 /// Launches the standalone `lan_mesh_browser` binary, expected to sit

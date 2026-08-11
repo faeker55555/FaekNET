@@ -8,16 +8,32 @@
 //! -- so pointing the OS at 127.0.0.1 as its DNS server doesn't break
 //! normal internet browsing.
 //!
+//! Two kinds of names are served, both without any caching lag since the
+//! table is rebuilt from the live peer/service state on every change:
+//! - **Exact names** -- a peer's root name (`alice.mesh`) or one of its
+//!   advertised services (`game.alice.mesh`) -- matched case-
+//!   insensitively against the flat table `hosts.rs` builds.
+//! - **Wildcard subdomains of a peer root** -- *any* name ending in
+//!   `.<peer-root>` that isn't already a registered service (e.g.
+//!   `whatever.alice.mesh`, `dev.alice.mesh`) resolves to that peer's
+//!   virtual IP too. This is what makes subdomains genuinely open-ended
+//!   rather than requiring every service to be pre-registered: a peer
+//!   can point application-level virtual-hosting (e.g. an nginx
+//!   server_name block, or a game server that inspects SNI/Host headers)
+//!   at any subdomain of their own name without touching mesh
+//!   config at all. A *registered* service name still wins over the
+//!   wildcard fallback if both would match, since it's more specific.
+//!
 //! This is the heavier-weight alternative to `hosts.rs`'s hosts-file
-//! sync: it additionally supports subdomains under the suffix (useful
-//! for e.g. per-peer service names later) and doesn't require rewriting
-//! a system file, but it depends on the OS/network stack actually being
-//! pointed at this resolver, which some platforms (especially Windows,
-//! and especially with a VPN/always-on-DNS client like WARP active)
-//! don't always respect for every process. `dns_auto_configure` makes a
-//! best-effort attempt to point the OS at it; it's not guaranteed to
-//! stick in every environment, which is why hosts-file sync remains the
-//! default and this stays opt-in.
+//! sync (which can't do wildcards -- a hosts file only ever maps exact
+//! names) and doesn't require rewriting a system file, but it depends on
+//! the OS/network stack actually being pointed at this resolver, which
+//! some platforms (especially Windows, and especially with a VPN/
+//! always-on-DNS client like WARP active) don't always respect for every
+//! process. `dns_auto_configure` makes a best-effort attempt to point
+//! the OS at it; it's not guaranteed to stick in every environment,
+//! which is why hosts-file sync remains the default and this stays
+//! opt-in.
 //!
 //! Deliberately implements only the minimal wire-format subset needed:
 //! single-question A-record queries, iterative label parsing (including
@@ -39,17 +55,30 @@ const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 /// silently misconfigured.
 const UPSTREAM_SERVERS: &[&str] = &["1.1.1.1:53", "8.8.8.8:53"];
 
+/// One resolvable name in the live DNS table.
+#[derive(Debug, Clone)]
+pub struct DnsEntry {
+    pub hostname: String,
+    pub virtual_ip: Ipv4Addr,
+    /// True for a peer's own root name -- these additionally act as a
+    /// wildcard base, so any subdomain of them that isn't itself a
+    /// registered entry still resolves to the same IP. False for a
+    /// specific registered service name, which only ever matches
+    /// exactly.
+    pub is_peer_root: bool,
+}
+
 /// Live table the DNS thread reads from every query -- kept as a plain
 /// `RwLock<Vec<..>>` rather than reaching into `mesh::MeshState` directly,
 /// so this module has no dependency on `mesh.rs` and could in principle
 /// be reused/tested standalone.
-pub type DnsTable = Arc<RwLock<Vec<(String, Ipv4Addr)>>>;
+pub type DnsTable = Arc<RwLock<Vec<DnsEntry>>>;
 
 pub fn new_table() -> DnsTable {
     Arc::new(RwLock::new(Vec::new()))
 }
 
-pub fn update_table(table: &DnsTable, entries: Vec<(String, Ipv4Addr)>) {
+pub fn update_table(table: &DnsTable, entries: Vec<DnsEntry>) {
     *table.write().unwrap() = entries;
 }
 
@@ -166,17 +195,29 @@ fn handle_query(query: &[u8], table: &DnsTable) -> QueryOutcome {
     }
 
     let lower = name.to_ascii_lowercase();
-    let matched_ip = table
-        .read()
-        .unwrap()
-        .iter()
-        .find(|(hostname, _)| hostname.eq_ignore_ascii_case(&lower))
-        .map(|(_, ip)| *ip);
-
-    match matched_ip {
+    match resolve(&lower, table) {
         Some(ip) => QueryOutcome::Answered(build_a_response(query, ip)),
         None => QueryOutcome::Forward,
     }
+}
+
+/// Resolves one lowercased query name against the live table: an exact
+/// match (peer root or registered service) always wins; failing that,
+/// falls back to wildcard matching against every peer root's `.<root>`
+/// suffix, so an arbitrary never-registered subdomain of a peer's own
+/// name (`whatever.alice.mesh`) still resolves to that peer.
+fn resolve(lower_name: &str, table: &DnsTable) -> Option<Ipv4Addr> {
+    let guard = table.read().unwrap();
+
+    if let Some(entry) = guard.iter().find(|e| e.hostname.eq_ignore_ascii_case(lower_name)) {
+        return Some(entry.virtual_ip);
+    }
+
+    guard
+        .iter()
+        .filter(|e| e.is_peer_root)
+        .find(|e| lower_name.ends_with(&format!(".{}", e.hostname.to_ascii_lowercase())))
+        .map(|e| e.virtual_ip)
 }
 
 /// Builds a minimal well-formed DNS response for a single A-record
@@ -398,10 +439,26 @@ mod tests {
         assert_eq!(qclass, QCLASS_IN);
     }
 
+    fn peer_root(hostname: &str, ip: Ipv4Addr) -> DnsEntry {
+        DnsEntry {
+            hostname: hostname.to_string(),
+            virtual_ip: ip,
+            is_peer_root: true,
+        }
+    }
+
+    fn service_entry(hostname: &str, ip: Ipv4Addr) -> DnsEntry {
+        DnsEntry {
+            hostname: hostname.to_string(),
+            virtual_ip: ip,
+            is_peer_root: false,
+        }
+    }
+
     #[test]
     fn answers_known_mesh_name() {
         let table = new_table();
-        update_table(&table, vec![("alice.mesh".to_string(), Ipv4Addr::new(10, 66, 0, 2))]);
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
         let q = build_query("alice.mesh", QTYPE_A);
         match handle_query(&q, &table) {
             QueryOutcome::Answered(resp) => {
@@ -415,7 +472,7 @@ mod tests {
     #[test]
     fn forwards_unknown_names() {
         let table = new_table();
-        update_table(&table, vec![("alice.mesh".to_string(), Ipv4Addr::new(10, 66, 0, 2))]);
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
         let q = build_query("example.com", QTYPE_A);
         assert!(matches!(handle_query(&q, &table), QueryOutcome::Forward));
     }
@@ -423,7 +480,7 @@ mod tests {
     #[test]
     fn forwards_non_a_queries_even_for_known_names() {
         let table = new_table();
-        update_table(&table, vec![("alice.mesh".to_string(), Ipv4Addr::new(10, 66, 0, 2))]);
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
         const QTYPE_AAAA: u16 = 28;
         let q = build_query("alice.mesh", QTYPE_AAAA);
         assert!(matches!(handle_query(&q, &table), QueryOutcome::Forward));
@@ -432,8 +489,88 @@ mod tests {
     #[test]
     fn case_insensitive_match() {
         let table = new_table();
-        update_table(&table, vec![("alice.mesh".to_string(), Ipv4Addr::new(10, 66, 0, 2))]);
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
         let q = build_query("ALICE.MESH", QTYPE_A);
         assert!(matches!(handle_query(&q, &table), QueryOutcome::Answered(_)));
+    }
+
+    #[test]
+    fn wildcard_subdomain_of_peer_root_resolves() {
+        let table = new_table();
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
+        // Never explicitly registered as a service -- should still
+        // resolve via the wildcard-of-peer-root fallback.
+        let q = build_query("whatever.alice.mesh", QTYPE_A);
+        match handle_query(&q, &table) {
+            QueryOutcome::Answered(resp) => assert_eq!(&resp[resp.len() - 4..], &[10, 66, 0, 2]),
+            _ => panic!("expected wildcard match to resolve"),
+        }
+        // Multi-level subdomains should also fall through to the peer.
+        let q2 = build_query("deep.sub.alice.mesh", QTYPE_A);
+        assert!(matches!(handle_query(&q2, &table), QueryOutcome::Answered(_)));
+    }
+
+    #[test]
+    fn registered_service_wins_over_wildcard() {
+        let table = new_table();
+        update_table(
+            &table,
+            vec![
+                peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2)),
+                service_entry("game.alice.mesh", Ipv4Addr::new(10, 66, 0, 2)),
+            ],
+        );
+        // Exact registered name matches directly (not just via wildcard).
+        let q = build_query("game.alice.mesh", QTYPE_A);
+        assert!(matches!(handle_query(&q, &table), QueryOutcome::Answered(_)));
+    }
+
+    #[test]
+    fn deep_subdomain_of_a_service_still_resolves_via_peer_wildcard() {
+        let table = new_table();
+        update_table(
+            &table,
+            vec![
+                peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2)),
+                service_entry("game.alice.mesh", Ipv4Addr::new(10, 66, 0, 2)),
+            ],
+        );
+        // "sub.game.alice.mesh" isn't itself registered, but it's still a
+        // subdomain of the peer root "alice.mesh" (only peer roots, not
+        // service names, act as wildcard bases -- but *any* depth of
+        // subdomain under a peer root should fall through to it).
+        let q = build_query("sub.game.alice.mesh", QTYPE_A);
+        match handle_query(&q, &table) {
+            QueryOutcome::Answered(resp) => assert_eq!(&resp[resp.len() - 4..], &[10, 66, 0, 2]),
+            _ => panic!("expected deep subdomain of peer root to resolve"),
+        }
+    }
+
+    #[test]
+    fn subdomain_of_a_different_peers_service_name_does_not_leak() {
+        let table = new_table();
+        update_table(
+            &table,
+            vec![
+                peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2)),
+                peer_root("bob.mesh", Ipv4Addr::new(10, 66, 0, 3)),
+                service_entry("game.bob.mesh", Ipv4Addr::new(10, 66, 0, 3)),
+            ],
+        );
+        // A name that merely contains another peer's service label as a
+        // substring, but isn't actually a subdomain of any peer root,
+        // must not match anything.
+        let q = build_query("game-bob-mesh.example.com", QTYPE_A);
+        assert!(matches!(handle_query(&q, &table), QueryOutcome::Forward));
+    }
+
+    #[test]
+    fn unrelated_suffix_does_not_falsely_match() {
+        let table = new_table();
+        update_table(&table, vec![peer_root("alice.mesh", Ipv4Addr::new(10, 66, 0, 2))]);
+        // "evilalice.mesh" ends with "alice.mesh" as a raw string but NOT
+        // as a proper ".alice.mesh" dotted suffix -- must not match.
+        let q = build_query("evilalice.mesh", QTYPE_A);
+        assert!(matches!(handle_query(&q, &table), QueryOutcome::Forward));
     }
 }

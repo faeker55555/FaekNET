@@ -82,6 +82,25 @@ impl Default for AddServiceForm {
     }
 }
 
+/// Scratch state for the Settings screen's "manually enter public
+/// IP/port" form -- same shape as `AddServiceForm`, kept separate since
+/// it's a conceptually different action.
+pub struct ManualAddrForm {
+    pub ip: String,
+    pub port: String,
+    pub error: Option<String>,
+}
+
+impl Default for ManualAddrForm {
+    fn default() -> Self {
+        ManualAddrForm {
+            ip: String::new(),
+            port: String::new(),
+            error: None,
+        }
+    }
+}
+
 pub struct SetupForm {
     pub name: String,
     pub virtual_ip: String,
@@ -131,6 +150,7 @@ pub struct App {
     pub logs: LogBuffer,
     pub add_peer_modal: AddPeerModal,
     pub add_service_form: AddServiceForm,
+    pub manual_addr_form: ManualAddrForm,
     pub last_refresh: std::time::Instant,
     pub toast: Option<(String, std::time::Instant)>,
 }
@@ -163,6 +183,7 @@ impl App {
             logs,
             add_peer_modal: AddPeerModal::default(),
             add_service_form: AddServiceForm::default(),
+            manual_addr_form: ManualAddrForm::default(),
             last_refresh: std::time::Instant::now(),
             toast: None,
         }
@@ -210,6 +231,30 @@ impl App {
             AppMode::Running { handle, .. } => Some(handle.config_snapshot()),
             AppMode::Stopped { config } => Some(config.clone()),
             AppMode::Setup { saved_config, .. } => saved_config.clone(),
+        }
+    }
+
+    /// Saves `cfg` to disk AND updates whichever in-memory copy the
+    /// current `AppMode` is holding, so a screen that edits config while
+    /// the mesh is stopped/in setup (rather than live via a
+    /// `MeshHandle::*_live` method) sees its own change reflected
+    /// immediately instead of only after a restart/reload -- the same
+    /// class of bug the one-sided-peer-visibility and Windows-self-STUN
+    /// fixes were about, just in the GUI's own state instead of the mesh
+    /// engine's.
+    pub fn save_and_sync_config(&mut self, cfg: Config) {
+        let _ = cfg.save();
+        match &mut self.mode {
+            AppMode::Stopped { config } => *config = cfg,
+            AppMode::Setup { saved_config, .. } => *saved_config = Some(cfg),
+            AppMode::Running { .. } => {
+                // Live mode edits its own config through MeshHandle
+                // methods instead (add_service_live, etc.) -- if this is
+                // ever called while running, saving directly to disk
+                // like this would just get overwritten the next time the
+                // live mesh persists something of its own, so there's
+                // nothing more to do here.
+            }
         }
     }
 }

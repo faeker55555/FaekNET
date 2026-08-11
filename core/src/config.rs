@@ -62,6 +62,60 @@ pub struct MeConfig {
     /// Only has any effect if `dns_server` is also enabled.
     #[serde(default)]
     pub dns_auto_configure: bool,
+
+    /// Manual override for our own public ip:port, bypassing self-STUN
+    /// discovery entirely when set. Useful when STUN is blocked/
+    /// unreliable on a given network (corporate firewall, some
+    /// antivirus/security suites, or self-STUN simply never resolving
+    /// for reasons that resist diagnosis) -- get the IP from any "what's
+    /// my IP" site and the port from your router's port-forwarding page
+    /// (forward the UDP `listen_port` you configured to this machine) if
+    /// you're behind a NAT you control, or leave both unset to keep using
+    /// automatic STUN discovery. Both fields must be set together to take
+    /// effect; if only one is present it's ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_public_port: Option<u16>,
+
+    /// Whether to pin the mesh's UDP socket to the OS's real internet-
+    /// facing network interface, explicitly skipping VPN/tunnel-style
+    /// virtual adapters (Cloudflare WARP, WireGuard, etc.) and the mesh's
+    /// own virtual TUN adapter. On by default -- this is what makes
+    /// self-STUN discovery work correctly when an always-on VPN/WARP
+    /// client is active. Turn this OFF as a diagnostic/workaround if
+    /// self-STUN still won't resolve even without any VPN active -- on
+    /// some Windows machines the interface enumeration/pinning itself can
+    /// interact badly with a particular network setup (security
+    /// software, unusual adapter configurations, etc.) for reasons this
+    /// project has no way to reproduce or diagnose remotely; disabling it
+    /// reverts to letting the OS pick the outbound route normally, the
+    /// same as every other UDP application on the machine.
+    #[serde(default = "default_true")]
+    pub warp_compat: bool,
+
+    /// Whether to persist our own discovered (or manually entered) public
+    /// ip:port to mesh.toml (`cached_public_ip`/`cached_public_port`
+    /// below), so future launches have an immediately usable value
+    /// without waiting on self-STUN to succeed first. Off by default.
+    /// When enabled, the cached value is adopted immediately at startup
+    /// if present, while self-STUN continues running in the background as
+    /// normal to keep it current -- and if self-STUN can never succeed at
+    /// all on this network, the cached value keeps being used
+    /// indefinitely instead of the mesh being stuck advertising no
+    /// address at all (and re-logging a failure warning forever).
+    #[serde(default)]
+    pub cache_public_addr: bool,
+    /// Last successfully discovered (or manually entered) public ip:port,
+    /// persisted here when `cache_public_addr` is enabled. Not meant to
+    /// be hand-edited -- use `manual_public_ip`/`manual_public_port`
+    /// instead if you want to force a specific value; use the "reset
+    /// public address" action (CLI: `lan_mesh reset-public-addr`, GUI:
+    /// Settings screen) to clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_public_ip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_public_port: Option<u16>,
 }
 
 /// One named service this machine advertises to the mesh: a friendly
@@ -145,6 +199,59 @@ impl Config {
         Path::new(CONFIG_PATH).exists()
     }
 
+    /// Resolves the manual public-address override, if both its fields
+    /// are present and the IP half actually parses. Returns None if
+    /// either field is unset (self-STUN discovery should be used
+    /// instead) or the stored IP string is invalid (defensively -- the
+    /// GUI/CLI both validate on entry, but a hand-edited mesh.toml could
+    /// still contain garbage).
+    pub fn manual_public_addr(&self) -> Option<std::net::SocketAddr> {
+        let ip = self.me.manual_public_ip.as_ref()?;
+        let port = self.me.manual_public_port?;
+        let ip: Ipv4Addr = ip.trim().parse().ok()?;
+        Some(std::net::SocketAddr::from((ip, port)))
+    }
+
+    /// Resolves the cached public-address fallback, if present and
+    /// `cache_public_addr` is enabled. See `MeConfig::cache_public_addr`
+    /// doc comment for the full rationale.
+    pub fn cached_public_addr(&self) -> Option<std::net::SocketAddr> {
+        if !self.me.cache_public_addr {
+            return None;
+        }
+        let ip = self.me.cached_public_ip.as_ref()?;
+        let port = self.me.cached_public_port?;
+        let ip: Ipv4Addr = ip.trim().parse().ok()?;
+        Some(std::net::SocketAddr::from((ip, port)))
+    }
+
+    /// Persists the given address as the cached public address, best
+    /// effort (failures are for the caller to log, not fatal). No-op if
+    /// `cache_public_addr` is disabled, so a stale cached value left over
+    /// from when caching was previously enabled doesn't linger
+    /// meaninglessly once it's turned back off... except it deliberately
+    /// does NOT clear the old cached value either, so re-enabling caching
+    /// later still has something to fall back on immediately rather than
+    /// starting from nothing. Use `clear_cached_public_addr` to actually
+    /// wipe it.
+    pub fn set_cached_public_addr(&mut self, addr: std::net::SocketAddr) {
+        if !self.me.cache_public_addr {
+            return;
+        }
+        self.me.cached_public_ip = Some(addr.ip().to_string());
+        self.me.cached_public_port = Some(addr.port());
+    }
+
+    /// Clears any cached public address (used by the "reset public
+    /// address" action). Does not touch `manual_public_ip`/
+    /// `manual_public_port` -- those are a separate, explicit override
+    /// the user has to clear themselves if they want to go back to
+    /// automatic discovery.
+    pub fn clear_cached_public_addr(&mut self) {
+        self.me.cached_public_ip = None;
+        self.me.cached_public_port = None;
+    }
+
     /// Broadcast address for the virtual LAN, derived from this node's
     /// virtual IP and subnet prefix (e.g. 10.66.0.2/24 -> 10.66.0.255).
     pub fn broadcast_addr(&self) -> Ipv4Addr {
@@ -156,5 +263,114 @@ impl Config {
         };
         let broadcast_u32 = (ip_u32 & mask) | !mask;
         Ipv4Addr::from(broadcast_u32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> Config {
+        Config {
+            me: MeConfig {
+                name: "me".to_string(),
+                virtual_ip: "10.66.0.1".parse().unwrap(),
+                prefix: 24,
+                listen_port: 12345,
+                psk: String::new(),
+                mtu: 1400,
+                domain_suffix: "mesh".to_string(),
+                sync_hosts_file: true,
+                dns_server: false,
+                dns_port: 53,
+                dns_auto_configure: false,
+                manual_public_ip: None,
+                manual_public_port: None,
+                warp_compat: true,
+                cache_public_addr: false,
+                cached_public_ip: None,
+                cached_public_port: None,
+            },
+            peers: Vec::new(),
+            services: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn manual_public_addr_is_none_when_unset() {
+        let cfg = base_config();
+        assert_eq!(cfg.manual_public_addr(), None);
+    }
+
+    #[test]
+    fn manual_public_addr_requires_both_fields() {
+        let mut cfg = base_config();
+        cfg.me.manual_public_ip = Some("203.0.113.5".to_string());
+        // port still missing -- should not resolve to anything.
+        assert_eq!(cfg.manual_public_addr(), None);
+
+        cfg.me.manual_public_port = Some(4000);
+        assert_eq!(cfg.manual_public_addr(), Some("203.0.113.5:4000".parse().unwrap()));
+    }
+
+    #[test]
+    fn manual_public_addr_rejects_garbage_ip() {
+        let mut cfg = base_config();
+        cfg.me.manual_public_ip = Some("not-an-ip".to_string());
+        cfg.me.manual_public_port = Some(4000);
+        assert_eq!(cfg.manual_public_addr(), None);
+    }
+
+    #[test]
+    fn cached_public_addr_disabled_by_default_even_with_values_present() {
+        let mut cfg = base_config();
+        cfg.me.cached_public_ip = Some("203.0.113.9".to_string());
+        cfg.me.cached_public_port = Some(9000);
+        // cache_public_addr is false -- cached values should be ignored.
+        assert_eq!(cfg.cached_public_addr(), None);
+    }
+
+    #[test]
+    fn cached_public_addr_resolves_when_enabled() {
+        let mut cfg = base_config();
+        cfg.me.cache_public_addr = true;
+        cfg.me.cached_public_ip = Some("203.0.113.9".to_string());
+        cfg.me.cached_public_port = Some(9000);
+        assert_eq!(cfg.cached_public_addr(), Some("203.0.113.9:9000".parse().unwrap()));
+    }
+
+    #[test]
+    fn set_cached_public_addr_is_a_noop_when_caching_disabled() {
+        let mut cfg = base_config();
+        cfg.set_cached_public_addr("203.0.113.9:9000".parse().unwrap());
+        assert_eq!(cfg.me.cached_public_ip, None);
+        assert_eq!(cfg.me.cached_public_port, None);
+    }
+
+    #[test]
+    fn set_and_clear_cached_public_addr_roundtrip() {
+        let mut cfg = base_config();
+        cfg.me.cache_public_addr = true;
+        cfg.set_cached_public_addr("203.0.113.9:9000".parse().unwrap());
+        assert_eq!(cfg.cached_public_addr(), Some("203.0.113.9:9000".parse().unwrap()));
+
+        cfg.clear_cached_public_addr();
+        assert_eq!(cfg.cached_public_addr(), None);
+        assert_eq!(cfg.me.cached_public_ip, None);
+        assert_eq!(cfg.me.cached_public_port, None);
+    }
+
+    #[test]
+    fn manual_override_and_cache_are_independent() {
+        // Setting a manual override should not disturb an existing cache
+        // entry, and vice versa -- they're deliberately separate knobs.
+        let mut cfg = base_config();
+        cfg.me.cache_public_addr = true;
+        cfg.set_cached_public_addr("203.0.113.9:9000".parse().unwrap());
+        cfg.me.manual_public_ip = Some("198.51.100.1".to_string());
+        cfg.me.manual_public_port = Some(1234);
+
+        assert_eq!(cfg.manual_public_addr(), Some("198.51.100.1:1234".parse().unwrap()));
+        assert_eq!(cfg.cached_public_addr(), Some("203.0.113.9:9000".parse().unwrap()));
     }
 }

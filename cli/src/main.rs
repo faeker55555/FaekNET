@@ -53,6 +53,30 @@ Usage:
   lan_mesh remove-service <name>
                            Stop advertising a service
   lan_mesh list-services   Show services you've configured
+  lan_mesh set-public-addr <ip> <port>
+                           Manually set your own public ip:port, bypassing
+                           self-STUN discovery entirely -- for networks
+                           where STUN is blocked/unreliable, or when you
+                           already know the address (e.g. a server with a
+                           static IP + port-forwarded router)
+  lan_mesh clear-public-addr
+                           Remove a manual override, reverting to
+                           automatic self-STUN discovery
+  lan_mesh reset-public-addr
+                           Clear a cached public address (see
+                           `cache-public-addr` below), forcing a fresh
+                           self-STUN probe next run
+  lan_mesh warp-compat <on|off>
+                           Toggle interface-pinning used to work around
+                           always-on VPN/WARP clients rerouting the
+                           mesh's own traffic. Leave ON unless self-STUN
+                           still won't resolve on Windows even with no
+                           VPN active, in which case try turning it OFF
+  lan_mesh cache-public-addr <on|off>
+                           When ON, your discovered public address is
+                           saved to mesh.toml so future launches have an
+                           immediately usable value without waiting on
+                           STUN to succeed again
 
 Quickest way to connect with a friend:
   1. Both run `lan_mesh init` (one of you leaves the PSK prompt empty to
@@ -139,6 +163,12 @@ fn cmd_init() {
             dns_server: false,
             dns_port: 53,
             dns_auto_configure: false,
+            manual_public_ip: None,
+            manual_public_port: None,
+            warp_compat: true,
+            cache_public_addr: false,
+            cached_public_ip: None,
+            cached_public_port: None,
         },
         peers: Vec::new(),
         services: Vec::new(),
@@ -490,6 +520,109 @@ fn cmd_run() {
     }
 }
 
+fn load_or_die() -> Option<Config> {
+    match Config::load() {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            None
+        }
+    }
+}
+
+/// Manually sets this machine's public ip:port, bypassing self-STUN
+/// discovery entirely -- for networks where STUN is blocked/unreliable,
+/// or when you already know the address (e.g. a server with a static IP
+/// and a manually port-forwarded router). Takes effect on the next `run`
+/// (or immediately, if the mesh is running live in the GUI, via
+/// `MeshHandle::set_manual_public_addr`).
+fn cmd_set_public_addr(ip_str: &str, port_str: &str) {
+    let Some(mut cfg) = load_or_die() else { return };
+    let Ok(ip) = ip_str.parse::<Ipv4Addr>() else {
+        eprintln!("Invalid IP address '{ip_str}'.");
+        return;
+    };
+    let Ok(port) = port_str.parse::<u16>() else {
+        eprintln!("Invalid port '{port_str}'.");
+        return;
+    };
+    cfg.me.manual_public_ip = Some(ip.to_string());
+    cfg.me.manual_public_port = Some(port);
+    cfg.save().expect("failed to write mesh.toml");
+    println!(
+        "Manual public address set to {ip}:{port} -- self-STUN discovery is now disabled. \
+Run `lan_mesh clear-public-addr` to go back to automatic discovery."
+    );
+}
+
+fn cmd_clear_public_addr() {
+    let Some(mut cfg) = load_or_die() else { return };
+    if cfg.me.manual_public_ip.is_none() && cfg.me.manual_public_port.is_none() {
+        println!("No manual public address is set.");
+        return;
+    }
+    cfg.me.manual_public_ip = None;
+    cfg.me.manual_public_port = None;
+    cfg.save().expect("failed to write mesh.toml");
+    println!("Manual public address cleared -- automatic self-STUN discovery will be used.");
+}
+
+/// Clears any cached public address (see `cache-public-addr`), forcing a
+/// fresh self-STUN probe on next `run` instead of continuing to
+/// advertise a possibly-stale previous value. Does not touch a manual
+/// override, if one is set.
+fn cmd_reset_public_addr() {
+    let Some(mut cfg) = load_or_die() else { return };
+    cfg.clear_cached_public_addr();
+    cfg.save().expect("failed to write mesh.toml");
+    println!("Cached public address cleared.");
+}
+
+fn cmd_warp_compat(arg: &str) {
+    let Some(mut cfg) = load_or_die() else { return };
+    match arg {
+        "on" | "true" | "enable" => {
+            cfg.me.warp_compat = true;
+            cfg.save().expect("failed to write mesh.toml");
+            println!(
+                "WARP-compatibility interface pinning ENABLED. The mesh will bind its UDP \
+socket to your real network interface, explicitly skipping VPN/tunnel adapters \
+(Cloudflare WARP, WireGuard, etc.) and its own virtual adapter."
+            );
+        }
+        "off" | "false" | "disable" => {
+            cfg.me.warp_compat = false;
+            cfg.save().expect("failed to write mesh.toml");
+            println!(
+                "WARP-compatibility interface pinning DISABLED. The mesh's UDP socket will use \
+whatever route the OS picks normally, like any other application -- use this if self-STUN \
+still won't resolve on Windows even without a VPN/WARP active."
+            );
+        }
+        other => eprintln!("Usage: lan_mesh warp-compat <on|off> (got '{other}')"),
+    }
+}
+
+fn cmd_cache_public_addr(arg: &str) {
+    let Some(mut cfg) = load_or_die() else { return };
+    match arg {
+        "on" | "true" | "enable" => {
+            cfg.me.cache_public_addr = true;
+            cfg.save().expect("failed to write mesh.toml");
+            println!(
+                "Public address caching ENABLED. Once self-STUN succeeds, the result is saved to \
+mesh.toml so future launches have an immediately usable address without waiting on STUN."
+            );
+        }
+        "off" | "false" | "disable" => {
+            cfg.me.cache_public_addr = false;
+            cfg.save().expect("failed to write mesh.toml");
+            println!("Public address caching DISABLED. (Any already-cached value is left in place; use `lan_mesh reset-public-addr` to clear it.)");
+        }
+        other => eprintln!("Usage: lan_mesh cache-public-addr <on|off> (got '{other}')"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
@@ -517,6 +650,20 @@ fn main() {
             None => eprintln!("Usage: lan_mesh remove-service <name>"),
         },
         Some("list-services") => cmd_list_services(),
+        Some("set-public-addr") => match (args.get(2), args.get(3)) {
+            (Some(ip), Some(port)) => cmd_set_public_addr(ip, port),
+            _ => eprintln!("Usage: lan_mesh set-public-addr <ip> <port>"),
+        },
+        Some("clear-public-addr") => cmd_clear_public_addr(),
+        Some("reset-public-addr") => cmd_reset_public_addr(),
+        Some("warp-compat") => match args.get(2) {
+            Some(arg) => cmd_warp_compat(arg),
+            None => eprintln!("Usage: lan_mesh warp-compat <on|off>"),
+        },
+        Some("cache-public-addr") => match args.get(2) {
+            Some(arg) => cmd_cache_public_addr(arg),
+            None => eprintln!("Usage: lan_mesh cache-public-addr <on|off>"),
+        },
         Some("run") => cmd_run(),
         _ => print_usage(),
     }

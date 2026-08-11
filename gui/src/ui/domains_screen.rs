@@ -279,7 +279,7 @@ fn add_service(app: &mut App) {
                 } else {
                     cfg.services.push(lan_mesh_core::config::ServiceConfig { name: name.clone(), port });
                 }
-                let _ = cfg.save();
+                app.save_and_sync_config(cfg);
                 app.show_toast(format!("Service '{name}' saved -- will announce once the mesh starts."));
             }
         }
@@ -297,7 +297,7 @@ fn remove_service(app: &mut App, name: &str) {
         _ => {
             if let Some(mut cfg) = app.current_config() {
                 cfg.services.retain(|s| !s.name.eq_ignore_ascii_case(name));
-                let _ = cfg.save();
+                app.save_and_sync_config(cfg);
             }
         }
     }

@@ -13,10 +13,29 @@ const BINDING_RESPONSE_SUCCESS: u16 = 0x0101;
 const XOR_MAPPED_ADDRESS: u16 = 0x0020;
 const MAPPED_ADDRESS: u16 = 0x0001;
 
+/// Well-known public STUN servers, tried in order until one answers.
+/// Deliberately spread across several unrelated operators/networks
+/// (Google, Cloudflare, Yandex, plus a handful of independent/community
+/// servers) rather than relying on any single provider, since a STUN
+/// probe only needs ONE of these to succeed -- more independent servers
+/// means more resilience against any one of them being blocked,
+/// rate-limited, or temporarily down on a given network. This is also a
+/// direct mitigation for "self-STUN never resolves": if the reason is
+/// that a specific server (or a specific provider's IP ranges) is
+/// blocked on that network/firewall rather than STUN in general, trying
+/// several unrelated ones gives a real chance of finding one that isn't.
 pub const DEFAULT_SERVERS: &[(&str, u16)] = &[
     ("stun.l.google.com", 19302),
     ("stun1.l.google.com", 19302),
+    ("stun2.l.google.com", 19302),
+    ("stun3.l.google.com", 19302),
+    ("stun4.l.google.com", 19302),
     ("stun.cloudflare.com", 3478),
+    ("stun.rtc.yandex.net", 3478),
+    ("stun.nextcloud.com", 3478),
+    ("stunserver2025.stunprotocol.org", 3478),
+    ("stun.sipnet.ru", 3478),
+    ("stun.miwifi.com", 3478),
 ];
 
 fn build_request(tx_id: &[u8; 12]) -> [u8; 20] {

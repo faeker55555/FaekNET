@@ -202,36 +202,57 @@ fn get_real_interface(my_virtual_ip: Option<Ipv4Addr>) -> Option<(u32, String)> 
     pick_real_interface(&candidates, my_virtual_ip)
 }
 
+/// `warp_compat` gates the interface-pinning logic below entirely: when
+/// `false`, the socket is bound to `0.0.0.0` and left for the OS to route
+/// normally, exactly like every other UDP application on the machine --
+/// no interface enumeration, no `SO_BINDTODEVICE`/`IP_UNICAST_IF` calls
+/// at all. This exists as an explicit escape hatch/diagnostic toggle: the
+/// pinning logic exists specifically to work around always-on VPN/WARP
+/// clients silently rerouting the mesh's own traffic, but on some
+/// machines -- for reasons this project has no way to reproduce or
+/// diagnose remotely (unusual adapter configurations, security software
+/// intercepting `netconfig_rs`'s enumeration calls, etc.) -- the pinning
+/// logic itself can misbehave even with no VPN present at all. Turning
+/// this off trades away the WARP workaround for "definitely behaves like
+/// a normal UDP socket," which is the right trade for anyone hitting that
+/// failure mode and not running WARP/a VPN anyway.
 fn create_udp_socket(
     listen_port: u16,
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] my_virtual_ip: Option<Ipv4Addr>,
+    warp_compat: bool,
 ) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
     socket.set_reuse_address(true)?;
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(iface) = get_real_interface() {
-            match socket.bind_device(Some(iface.as_bytes())) {
-                Ok(_) => log(&format!("UDP socket bound to device: {}", iface)),
-                Err(e) => log(&format!(
-                    "Could not bind UDP socket to device ({e}); continuing without it."
-                )),
+    if !warp_compat {
+        log("WARP-compatibility interface pinning is disabled (warp_compat = false) -- \
+the socket will use whatever route the OS picks normally.");
+    } else {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(iface) = get_real_interface() {
+                match socket.bind_device(Some(iface.as_bytes())) {
+                    Ok(_) => log(&format!("UDP socket bound to device: {}", iface)),
+                    Err(e) => log(&format!(
+                        "Could not bind UDP socket to device ({e}); continuing without it."
+                    )),
+                }
             }
         }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some((index, name)) = get_real_interface(my_virtual_ip) {
-            match bind_socket_to_interface_windows(&socket, index) {
-                Ok(()) => log(&format!("UDP socket bound to interface: {name} (index {index})")),
-                Err(e) => log(&format!(
-                    "Could not bind UDP socket to interface '{name}' ({e}); continuing without it."
-                )),
-            }
-        } else {
-            log("Warning: could not identify a non-VPN network interface to bind to; \
+        #[cfg(target_os = "windows")]
+        {
+            if let Some((index, name)) = get_real_interface(my_virtual_ip) {
+                match bind_socket_to_interface_windows(&socket, index) {
+                    Ok(()) => log(&format!("UDP socket bound to interface: {name} (index {index})")),
+                    Err(e) => log(&format!(
+                        "Could not bind UDP socket to interface '{name}' ({e}); continuing without it."
+                    )),
+                }
+            } else {
+                log("Warning: could not identify a non-VPN network interface to bind to; \
 if you have Cloudflare WARP or another always-on VPN active, the mesh's \
-self-detected public address may be wrong.");
+self-detected public address may be wrong. If you are NOT using a VPN and self-STUN \
+still isn't resolving, try disabling \"WARP compatibility\" in Settings.");
+            }
         }
     }
     let addr: SocketAddr = format!("0.0.0.0:{}", listen_port).parse().unwrap();
@@ -341,6 +362,13 @@ pub struct MeshState {
     /// Handle to the DNS resolver thread, if running, so it can be
     /// stopped when the mesh stops.
     dns_handle: Mutex<Option<DnsHandle>>,
+    /// Lets `MeshHandle` methods (manual address override, reset public
+    /// address, etc.) wake the self-STUN ticker thread immediately
+    /// instead of waiting up to `SELF_STUN_INTERVAL` for the change to
+    /// take effect -- see `start()`'s self-STUN ticker for the receiving
+    /// end. Wrapped in a `Mutex` purely because `mpsc::Sender` isn't
+    /// `Sync`, not because concurrent sends need any coordination.
+    stun_wake_tx: Mutex<mpsc::Sender<()>>,
 }
 
 impl MeshState {
@@ -864,6 +892,79 @@ impl MeshHandle {
             })
             .collect()
     }
+
+    /// Sets a manual public ip:port override, taking effect immediately
+    /// (wakes the self-STUN thread rather than waiting for its next
+    /// scheduled tick) and persisting to mesh.toml. While set, self-STUN
+    /// discovery is skipped entirely and this exact address is
+    /// advertised to peers -- see the self-STUN ticker's doc comment in
+    /// `start()` for the full rationale. Used by the GUI/CLI's "manually
+    /// enter public IP/port" action.
+    pub fn set_manual_public_addr(&self, ip: Ipv4Addr, port: u16) {
+        let mut cfg = self.state.config.lock().unwrap();
+        cfg.me.manual_public_ip = Some(ip.to_string());
+        cfg.me.manual_public_port = Some(port);
+        if let Err(e) = cfg.save() {
+            log(&format!("Warning: could not persist manual public address: {e}"));
+        }
+        drop(cfg);
+        // Applied to the in-memory value immediately (not left for the
+        // self-STUN thread to notice on its next wake) so a caller
+        // reading `my_public_addr()`/`snapshot()` right after this call
+        // returns -- e.g. a GUI updating its display -- sees the new
+        // value straight away, the same way `clear_manual_public_addr`
+        // and `reset_public_addr` already do for their own cases.
+        *self.state.my_public_addr.lock().unwrap() = Some((SocketAddr::from((ip, port)), now_secs() as u32));
+        self.wake_self_stun();
+    }
+
+    /// Clears a previously-set manual public address override, reverting
+    /// to automatic self-STUN discovery immediately.
+    pub fn clear_manual_public_addr(&self) {
+        let mut cfg = self.state.config.lock().unwrap();
+        cfg.me.manual_public_ip = None;
+        cfg.me.manual_public_port = None;
+        if let Err(e) = cfg.save() {
+            log(&format!("Warning: could not persist manual public address change: {e}"));
+        }
+        drop(cfg);
+        // Also clear the in-memory value right away rather than waiting
+        // for the self-STUN thread to wake up and notice -- otherwise a
+        // GUI showing "public address" would keep displaying the just-
+        // cleared manual value for up to SELF_STUN_INTERVAL.
+        *self.state.my_public_addr.lock().unwrap() = None;
+        self.wake_self_stun();
+    }
+
+    /// "Reset public address" action: clears any cached public address
+    /// (see `MeConfig::cache_public_addr`) AND clears the currently-known
+    /// in-memory value, forcing a genuinely fresh self-STUN probe on the
+    /// next wake instead of continuing to advertise a possibly-stale
+    /// cached/previous value. Does NOT touch a manual override, if one is
+    /// set -- that's a separate, more explicit choice the user has to
+    /// clear themselves via `clear_manual_public_addr`.
+    pub fn reset_public_addr(&self) {
+        let mut cfg = self.state.config.lock().unwrap();
+        cfg.clear_cached_public_addr();
+        if let Err(e) = cfg.save() {
+            log(&format!("Warning: could not persist public address reset: {e}"));
+        }
+        drop(cfg);
+        *self.state.my_public_addr.lock().unwrap() = None;
+        log("Public address reset -- re-running self-STUN discovery now.");
+        self.wake_self_stun();
+    }
+
+    /// Point-in-time read of whatever public address the mesh is
+    /// currently advertising (manual, self-STUN-discovered, or cached),
+    /// for display purposes.
+    pub fn my_public_addr(&self) -> Option<SocketAddr> {
+        self.state.my_public_addr.lock().unwrap().map(|(a, _)| a)
+    }
+
+    fn wake_self_stun(&self) {
+        let _ = self.state.stun_wake_tx.lock().unwrap().send(());
+    }
 }
 
 /// UI-friendly view of one resolvable local domain name -- either a
@@ -911,8 +1012,10 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
     let dns_server_enabled = config.me.dns_server;
     let dns_port = config.me.dns_port;
     let dns_auto_configure = config.me.dns_auto_configure;
+    let warp_compat = config.me.warp_compat;
 
     let dns_table = if dns_server_enabled { Some(dns::new_table()) } else { None };
+    let (stun_wake_tx, stun_wake_rx) = mpsc::channel::<()>();
 
     let state = Arc::new(MeshState {
         cipher,
@@ -927,6 +1030,7 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
         sync_hosts_file,
         dns_table: dns_table.clone(),
         dns_handle: Mutex::new(None),
+        stun_wake_tx: Mutex::new(stun_wake_tx),
     });
 
     // ---- Local domain names: hosts-file sync and/or built-in DNS ----
@@ -991,7 +1095,7 @@ On Windows this needs Administrator and wintun.dll next to the executable."
     // authoritatively exclude the TUN adapter we just brought up above,
     // regardless of what name/description Windows happens to report for
     // it -- see get_real_interface()'s doc comment for why that matters.
-    let sock = create_udp_socket(listen_port, Some(my_virtual_ip))?;
+    let sock = create_udp_socket(listen_port, Some(my_virtual_ip), warp_compat)?;
     log(&format!("Listening on UDP 0.0.0.0:{}", listen_port));
     let sock = Arc::new(sock);
     sock.set_read_timeout(Some(RECV_LOOP_TIMEOUT))?;
@@ -1271,42 +1375,139 @@ adding them so we can reach back (their real name will arrive shortly via gossip
     // ---- Self-STUN ticker: keep our own external address current, so the
     // ---- mesh self-heals immediately after a NAT/CGNAT port reassignment
     // ---- instead of waiting for a peer to notice on their own.
+    //
+    // Checked in this order on every wake (either the normal
+    // SELF_STUN_INTERVAL tick, or an immediate wake-up via
+    // `MeshHandle`'s manual-override/reset methods -- see
+    // `stun_wake_rx.recv_timeout` below):
+    //  1. Manual override (`manual_public_ip`/`manual_public_port` both
+    //     set) -- self-STUN is skipped entirely, this exact address is
+    //     used until the override is cleared. This is the escape hatch
+    //     for networks where STUN itself is blocked/unreliable, or a
+    //     user who already knows their address (e.g. a server with a
+    //     static IP and a manually port-forwarded router) and would
+    //     rather not depend on STUN at all. Re-checked every tick (not
+    //     just once at startup) so toggling it live via the GUI/CLI takes
+    //     effect on the very next wake, not just after a restart.
+    //  2. Normal self-STUN probing (unchanged from before).
+    //  3. If self-STUN fails AND a cached address exists
+    //     (`cache_public_addr` enabled with a previously-successful
+    //     value on file), fall back to the cached value instead of
+    //     leaving `my_public_addr` unset -- this is what lets the mesh
+    //     start immediately usable on a subsequent launch even before
+    //     the first successful probe of *this* run completes, and keeps
+    //     working indefinitely if self-STUN can never succeed at all on
+    //     a given network.
     {
         let sock = sock.clone();
         let state = state.clone();
         let running = running.clone();
-        thread::spawn(move || loop {
-            if !running.load(Ordering::Relaxed) {
-                break;
+        thread::spawn(move || {
+            // Seed from a cached address immediately at startup, if one
+            // exists, so the mesh has *something* to gossip/advertise
+            // right away instead of waiting for the first successful
+            // probe. Skipped if a manual override is already set, since
+            // that takes priority and is applied by the loop below on
+            // its very first iteration anyway.
+            let seed = {
+                let cfg = state.config.lock().unwrap();
+                if cfg.manual_public_addr().is_none() { cfg.cached_public_addr() } else { None }
+            };
+            if let Some(cached_addr) = seed {
+                log(&format!(
+                    "Starting with cached public address {cached_addr} while self-STUN discovery runs in the background."
+                ));
+                *state.my_public_addr.lock().unwrap() = Some((cached_addr, now_secs() as u32));
+                send_gossip_burst(&state, &sock);
             }
-            match self_stun_probe(&state, &sock) {
-                Some(addr) => {
-                    let epoch = now_secs() as u32;
-                    let previous = {
-                        let mut guard = state.my_public_addr.lock().unwrap();
-                        let previous = *guard;
-                        *guard = Some((addr, epoch));
-                        previous
-                    };
-                    let changed = previous.map(|(a, _)| a) != Some(addr);
+
+            loop {
+                if !running.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // IMPORTANT: `manual_public_addr()` must be captured into an
+                // owned value *before* the `if`/`else`, not called directly
+                // inside the `if let` condition -- Rust's temporary lifetime
+                // extension keeps a `MutexGuard` produced inside an `if let
+                // ... = EXPR { .. } else { .. }` condition alive for the
+                // *entire* if/else, including the else branch. Since the
+                // `else` branch below also needs to lock `state.config`
+                // (for caching a freshly self-STUN-discovered address),
+                // that used to self-deadlock forever the very first time
+                // self-STUN succeeded with `cache_public_addr` enabled --
+                // silently, since the deadlocked thread just stops logging
+                // instead of panicking. Binding to a plain `Option` first
+                // drops the guard immediately after the statement.
+                let manual_addr_now = state.config.lock().unwrap().manual_public_addr();
+                if let Some(manual_addr) = manual_addr_now {
+                    let changed = state.my_public_addr.lock().unwrap().map(|(a, _)| a) != Some(manual_addr);
                     if changed {
                         log(&format!(
-                            "Our external address is {}{} -- notifying peers immediately.",
-                            addr,
-                            if previous.is_some() { " (changed)" } else { "" }
+                            "Using manually configured public address {manual_addr} -- self-STUN discovery is disabled while this is set."
                         ));
-                        // Don't wait for the next scheduled gossip tick --
-                        // push the update out right away so the mesh
-                        // converges on our new address as fast as
-                        // possible after a NAT/CGNAT reassignment.
+                        *state.my_public_addr.lock().unwrap() = Some((manual_addr, now_secs() as u32));
                         send_gossip_burst(&state, &sock);
                     }
+                } else {
+                    match self_stun_probe(&state, &sock) {
+                        Some(addr) => {
+                            let epoch = now_secs() as u32;
+                            let previous = {
+                                let mut guard = state.my_public_addr.lock().unwrap();
+                                let previous = *guard;
+                                *guard = Some((addr, epoch));
+                                previous
+                            };
+                            let changed = previous.map(|(a, _)| a) != Some(addr);
+                            if changed {
+                                log(&format!(
+                                    "Our external address is {}{} -- notifying peers immediately.",
+                                    addr,
+                                    if previous.is_some() { " (changed)" } else { "" }
+                                ));
+                                // Don't wait for the next scheduled gossip tick --
+                                // push the update out right away so the mesh
+                                // converges on our new address as fast as
+                                // possible after a NAT/CGNAT reassignment.
+                                send_gossip_burst(&state, &sock);
+                            }
+                            let mut cfg = state.config.lock().unwrap();
+                            if cfg.me.cache_public_addr {
+                                let already_cached = cfg.cached_public_addr() == Some(addr);
+                                if !already_cached {
+                                    cfg.set_cached_public_addr(addr);
+                                    if let Err(e) = cfg.save() {
+                                        log(&format!("Warning: could not persist cached public address: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            let has_cache = state.config.lock().unwrap().cached_public_addr().is_some();
+                            if has_cache {
+                                log("Warning: could not determine our own external address via STUN this round; \
+continuing to use the cached address (will keep retrying STUN in the background).");
+                            } else {
+                                log("Warning: could not determine our own external address via STUN this round (will retry). \
+If this keeps happening, try Settings -> manually enter your public IP/port, or enable \
+\"cache public address\" once STUN succeeds at least once so future launches aren't blocked on it.");
+                            }
+                        }
+                    }
                 }
-                None => {
-                    log("Warning: could not determine our own external address via STUN this round (will retry).");
-                }
+
+                // Sleep by waiting on the wake channel instead of a plain
+                // thread::sleep, so MeshHandle::set_manual_public_addr /
+                // clear_manual_public_addr / reset_public_addr can force
+                // an immediate re-check instead of waiting up to
+                // SELF_STUN_INTERVAL for the change to be picked up.
+                // Ignoring the Result: a RecvTimeoutError::Disconnected
+                // (sender dropped) is impossible here since `state` (and
+                // therefore its stun_wake_tx) outlives this thread, and
+                // Timeout is the expected/normal case every interval.
+                let _ = stun_wake_rx.recv_timeout(SELF_STUN_INTERVAL);
             }
-            thread::sleep(SELF_STUN_INTERVAL);
         });
     }
 
@@ -1358,7 +1559,7 @@ pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()
     }
 
     let my_virtual_ip = config.me.virtual_ip;
-    let sock = create_udp_socket(config.me.listen_port, Some(my_virtual_ip))?;
+    let sock = create_udp_socket(config.me.listen_port, Some(my_virtual_ip), config.me.warp_compat)?;
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 
     struct Stats {
@@ -1517,6 +1718,12 @@ mod tests {
                 dns_server: false,
                 dns_port: 53,
                 dns_auto_configure: false,
+                manual_public_ip: None,
+                manual_public_port: None,
+                warp_compat: true,
+                cache_public_addr: false,
+                cached_public_ip: None,
+                cached_public_port: None,
             },
             peers: Vec::new(),
             services: Vec::new(),
@@ -1534,6 +1741,7 @@ mod tests {
             dns_table: None,
             dns_handle: Mutex::new(None),
             config: Mutex::new(config),
+            stun_wake_tx: Mutex::new(mpsc::channel().0),
         }
     }
 
@@ -1748,5 +1956,86 @@ mod tests {
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((2, "Ethernet".to_string())));
+    }
+
+    // ---- MeshHandle: manual public address / caching / reset ----
+    //
+    // Constructed directly from `test_state()` (same module, so private
+    // fields are accessible) rather than through `start()`, since these
+    // methods only ever touch `MeshState`/`Config` and the wake channel
+    // -- no real socket or TUN device needed to exercise them.
+
+    fn test_handle() -> MeshHandle {
+        MeshHandle {
+            state: Arc::new(test_state()),
+            running: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    #[test]
+    fn set_manual_public_addr_updates_config_and_live_state() {
+        let handle = test_handle();
+        assert_eq!(handle.my_public_addr(), None);
+
+        handle.set_manual_public_addr("203.0.113.5".parse().unwrap(), 4000);
+
+        assert_eq!(handle.my_public_addr(), Some("203.0.113.5:4000".parse().unwrap()));
+        let cfg = handle.config_snapshot();
+        assert_eq!(cfg.me.manual_public_ip.as_deref(), Some("203.0.113.5"));
+        assert_eq!(cfg.me.manual_public_port, Some(4000));
+    }
+
+    #[test]
+    fn clear_manual_public_addr_clears_config_and_live_state_immediately() {
+        let handle = test_handle();
+        handle.set_manual_public_addr("203.0.113.5".parse().unwrap(), 4000);
+        assert!(handle.my_public_addr().is_some());
+
+        handle.clear_manual_public_addr();
+
+        // Cleared immediately -- not left showing the stale manual value
+        // until some background thread notices (there's no background
+        // thread wired up in this test harness at all, which is exactly
+        // why the immediate in-memory clear inside the method itself
+        // matters).
+        assert_eq!(handle.my_public_addr(), None);
+        let cfg = handle.config_snapshot();
+        assert_eq!(cfg.me.manual_public_ip, None);
+        assert_eq!(cfg.me.manual_public_port, None);
+    }
+
+    #[test]
+    fn reset_public_addr_clears_cache_and_live_value_but_not_manual_override() {
+        let handle = test_handle();
+        {
+            let mut cfg = handle.state.config.lock().unwrap();
+            cfg.me.cache_public_addr = true;
+            cfg.set_cached_public_addr("203.0.113.9:9000".parse().unwrap());
+            cfg.me.manual_public_ip = Some("198.51.100.1".to_string());
+            cfg.me.manual_public_port = Some(1234);
+        }
+        *handle.state.my_public_addr.lock().unwrap() = Some(("203.0.113.9:9000".parse().unwrap(), 1));
+
+        handle.reset_public_addr();
+
+        assert_eq!(handle.my_public_addr(), None);
+        let cfg = handle.config_snapshot();
+        assert_eq!(cfg.me.cached_public_ip, None);
+        assert_eq!(cfg.me.cached_public_port, None);
+        // Manual override is a separate, more explicit choice -- reset
+        // must not silently clear it too.
+        assert_eq!(cfg.me.manual_public_ip.as_deref(), Some("198.51.100.1"));
+        assert_eq!(cfg.me.manual_public_port, Some(1234));
+    }
+
+    #[test]
+    fn set_manual_public_addr_wakes_the_stun_channel() {
+        let handle = test_handle();
+        let (tx, rx) = mpsc::channel();
+        *handle.state.stun_wake_tx.lock().unwrap() = tx;
+
+        handle.set_manual_public_addr("203.0.113.5".parse().unwrap(), 4000);
+
+        assert!(rx.try_recv().is_ok(), "expected a wake signal after setting a manual override");
     }
 }

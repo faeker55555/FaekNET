@@ -570,6 +570,71 @@ mode (an adapter named `"Ethernet 3"` with description `"lanmesh0"` —
 i.e. neither legacy heuristic would have caught it) to make sure it
 can't regress silently.
 
+### Still stuck on Windows self-STUN? New diagnostic/workaround tools
+
+The interface-selection fix above turned out **not** to fix every
+Windows self-STUN failure — one user tried it and it made no difference
+for them. Since their exact Windows network environment can't be
+reproduced or inspected from here, rather than guess again blindly at
+another adapter-selection heuristic, the mesh now gives you direct
+tools to work around or diagnose the problem yourself:
+
+- **Manually enter your own public IP/port**, bypassing self-STUN
+  entirely. Useful if STUN itself is blocked on your network, or you
+  already know your address (e.g. a box with a static IP and a
+  manually port-forwarded router).
+  - GUI: Settings → "PUBLIC ADDRESS DISCOVERY" → "MANUAL OVERRIDE".
+  - CLI: `lan_mesh set-public-addr <ip> <port>` / `lan_mesh clear-public-addr`.
+- **Disable WARP-compatibility (interface pinning)** — the interface
+  enumeration/pinning logic described above, entirely. If you are
+  *not* using a VPN and self-STUN still won't resolve, this rules out
+  that logic as the culprit: with it off, the mesh's socket binds to
+  `0.0.0.0` and lets the OS route normally, exactly like any other
+  application on the machine. Takes effect on the next (re)start.
+  - GUI: Settings → "PUBLIC ADDRESS DISCOVERY" → "WARP COMPATIBILITY" checkbox.
+  - CLI: `lan_mesh warp-compat <on|off>`.
+- **Cache the discovered/manual public address to `mesh.toml`**, so the
+  mesh doesn't have to re-run self-STUN (and doesn't sit unusable if it
+  fails) on every launch — once it succeeds once, or you set a manual
+  address, that value is immediately usable from the very next start
+  while self-STUN keeps retrying quietly in the background.
+  - GUI: Settings → "PUBLIC ADDRESS DISCOVERY" → "CACHE PUBLIC ADDRESS" checkbox.
+  - CLI: `lan_mesh cache-public-addr <on|off>`.
+- **Reset public address** button/command: clears the cached value and
+  forces a fresh self-STUN probe immediately (useful after a NAT
+  reassignment, or just to start over).
+  - GUI: Settings → "PUBLIC ADDRESS DISCOVERY" → "RESET PUBLIC ADDRESS" button.
+  - CLI: `lan_mesh reset-public-addr`.
+- **Expanded the built-in STUN server list** from 3 to 11 servers, so a
+  single blocked/rate-limited/down provider is far less likely to be
+  the whole problem: all 5 of Google's STUN servers, Cloudflare,
+  **Yandex** (`stun.rtc.yandex.net:3478`), Nextcloud, stunprotocol.org,
+  sipnet.ru, and Xiaomi's miwifi.com. Only one needs to answer for
+  self-STUN to succeed.
+
+All of the above are implemented, unit-tested (config, engine, and CLI
+layers), and verified against a real live-running mesh in this sandbox
+(manual override, cache-on-success, cache-seeding on startup, and
+WARP-compat-off all confirmed via `mesh.toml` and log output during an
+actual `lan_mesh run`). **Honest caveat: none of this is confirmed to
+be a fix for the specific Windows self-STUN failure that was reported
+this session** — the root cause on that machine is still unknown, since
+it can't be reproduced here. These are meant as tools to get you
+working again (manual override / cache) and to help narrow down the
+cause (WARP-compat toggle) rather than a guaranteed resolution.
+
+While verifying the caching feature live, a real (and separate) bug
+was found and fixed: the self-STUN background thread's `if let Some(x)
+= mutex.lock().unwrap().some_method() { .. } else { .. }` pattern kept
+the `MutexGuard` alive for the *entire* `if`/`else`, including the
+`else` branch — so the very first time self-STUN succeeded with
+"cache public address" enabled, the code inside the `else` branch tried
+to lock the same mutex again to persist the cached value, and
+deadlocked that thread silently forever (no crash, no log — it just
+stopped logging its periodic self-STUN status). Fixed by capturing the
+lock's result into an owned value in its own statement first, dropping
+the guard before entering the `if`/`else`.
+
 ## Known limitations
 
 - **Symmetric/endpoint-dependent NAT on both sides is unfixable by this

@@ -1,5 +1,5 @@
 use base64::Engine;
-use chacha20poly1305::aead::{Aead, Generate};
+use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 
 const NONCE_LEN: usize = 12;
@@ -28,20 +28,25 @@ impl Cipher {
     }
 
     pub fn generate_psk_b64() -> String {
-        let key = Key::generate();
+        use rand::Rng;
+        let mut key = [0u8; 32];
+        rand::rng().fill(&mut key);
         base64::engine::general_purpose::STANDARD.encode(key)
     }
 
     /// Encrypts `plaintext`, returning `nonce || ciphertext || tag` ready to
     /// send on the wire.
     pub fn seal(&self, plaintext: &[u8]) -> Vec<u8> {
-        let nonce = Nonce::generate();
+        use rand::Rng;
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rand::rng().fill(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
         let mut out = Vec::with_capacity(NONCE_LEN + plaintext.len() + TAG_LEN);
-        out.extend_from_slice(&nonce);
+        out.extend_from_slice(&nonce_bytes);
         // encrypt() cannot fail for this AEAD/key setup.
         let ct = self
             .cipher
-            .encrypt(&nonce, plaintext)
+            .encrypt(nonce, plaintext)
             .expect("chacha20poly1305 encryption failed unexpectedly");
         out.extend_from_slice(&ct);
         out
@@ -56,8 +61,8 @@ impl Cipher {
             return None;
         }
         let (nonce_bytes, ct) = wire.split_at(NONCE_LEN);
-        let nonce = Nonce::try_from(nonce_bytes).ok()?;
-        self.cipher.decrypt(&nonce, ct).ok()
+        let nonce = Nonce::from_slice(nonce_bytes);
+        self.cipher.decrypt(nonce, ct).ok()
     }
 }
 

@@ -21,5 +21,5 @@ tray-icon = { version = "0.21.3", default-features = false }
 gtk = "0.18"
 
 [[bin]]
-name = "lan_mesh_gui"
+name = "мяу-мяу_gui"
 path = "src/main.rs"

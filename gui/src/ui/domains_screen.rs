@@ -304,7 +304,7 @@ fn remove_service(app: &mut App, name: &str) {
     app.show_toast(format!("Removed service '{name}'."));
 }
 
-/// Launches the standalone `lan_mesh_browser` binary, expected to sit
+/// Launches the standalone `мяу-мяу_browser` binary, expected to sit
 /// next to this GUI executable (same directory, matching how the release
 /// packaging bundles it -- see `.github/workflows/release.yml`). An
 /// empty `target` opens the mesh home page instead of a specific
@@ -312,7 +312,7 @@ fn remove_service(app: &mut App, name: &str) {
 fn launch_browser(app: &mut App, target: &str) {
     let exe = std::env::current_exe().ok();
     let dir = exe.as_ref().and_then(|p| p.parent());
-    let browser_name = if cfg!(windows) { "lan_mesh_browser.exe" } else { "lan_mesh_browser" };
+    let browser_name = if cfg!(windows) { "мяу-мяу_browser.exe" } else { "мяу-мяу_browser" };
     let browser_path = dir.map(|d| d.join(browser_name));
 
     let mut cmd = match &browser_path {

@@ -1,4 +1,4 @@
-# lan_mesh
+# мяу-мяу net
 
 A small, self-hosted, pure peer-to-peer **virtual LAN** — in the spirit of Radmin VPN /
 Hamachi, but with **no third-party relay, rendezvous server, or VPN service**. Every peer

@@ -4,7 +4,7 @@ version = "0.31.0"
 edition = "2021"
 
 [[bin]]
-name = "lan_mesh"
+name = "мяу-мяу"
 path = "src/main.rs"
 
 [dependencies]

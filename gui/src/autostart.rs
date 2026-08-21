@@ -3,7 +3,7 @@
 // - Linux: an XDG autostart `.desktop` entry in
 //   `$XDG_CONFIG_HOME/autostart` (or `~/.config/autostart`), which all
 //   mainstream desktops (GNOME, KDE, XFCE, ...) honor at login.
-// - Windows: the `lan_mesh_gui` value under
+// - Windows: the `мяу-мяу_gui` value under
 //   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, managed via
 //   the system `reg.exe` (no admin rights needed for HKCU, and no extra
 //   dependencies in the app itself).
@@ -45,7 +45,7 @@ mod platform {
     }
 
     pub fn desktop_file() -> Option<PathBuf> {
-        autostart_dir().map(|d| d.join("lan-mesh-gui.desktop"))
+        autostart_dir().map(|d| d.join("мяу-мяу-gui.desktop"))
     }
 
     pub fn is_enabled() -> bool {
@@ -68,8 +68,8 @@ mod platform {
         let content = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=lan_mesh\n\
-             Comment=lan_mesh virtual LAN\n\
+             Name=мяу-мяу\n\
+             Comment=мяу-мяу virtual LAN\n\
              Exec=\"{exe_escaped}\" --minimized\n\
              Terminal=false\n\
              X-GNOME-Autostart-enabled=true\n"
@@ -97,7 +97,7 @@ mod platform {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    const VALUE: &str = "lan_mesh_gui";
+    const VALUE: &str = "мяу-мяу_gui";
 
     fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
         Command::new("reg")

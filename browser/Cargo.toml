@@ -43,5 +43,5 @@ serde_json = "1"
 gtk = "0.18"
 
 [[bin]]
-name = "lan_mesh_browser"
+name = "мяу-мяу_browser"
 path = "src/main.rs"

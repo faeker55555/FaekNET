@@ -45,12 +45,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([980.0, 640.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_title("lan_mesh"),
+            .with_title("мяу-мяу"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "lan_mesh",
+        "мяу-мяу",
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);

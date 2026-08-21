@@ -597,7 +597,7 @@ fn find_payload_dir(root: &Path) -> Result<PathBuf, String> {
                 .file_name()
                 .to_string_lossy()
                 .to_lowercase();
-            if name == "lan_mesh_gui" || name == "lan_mesh_gui.exe" {
+            if name == "мяу-мяу_gui" || name == "мяу-мяу_gui.exe" {
                 return Ok(path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| root.to_path_buf()));
             }
         }
@@ -615,7 +615,7 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
         .ok_or_else(|| "executable has no parent directory".to_string())?;
 
     let mut names: Vec<String> = vec![
-        "lan_mesh_gui".to_string(),
+        "мяу-мяу_gui".to_string(),
         "lan_mesh".to_string(),
         "lan_mesh_browser".to_string(),
     ];
@@ -646,7 +646,7 @@ fn is_gui_binary(path: &Path) -> bool {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    name == "lan_mesh_gui" || name == "lan_mesh_gui.exe"
+    name == "мяу-мяу_gui" || name == "мяу-мяу_gui.exe"
 }
 
 #[cfg(not(target_os = "windows"))]

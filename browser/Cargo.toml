@@ -1,6 +1,6 @@
 [package]
 name = "lan_mesh_browser"
-version = "0.1.0"
+version = "0.31.0"
 edition = "2021"
 
 # In-app browser: a small standalone window (own process, launched by the

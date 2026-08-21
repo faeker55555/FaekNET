@@ -35,9 +35,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug)]
 pub struct UpdateInfo {
-    /// Full release tag, e.g. "v0.31.0".
-    pub tag: String,
-    /// Tag with any leading "v" stripped, for display.
+    /// Release tag with any leading "v" stripped, for display.
     pub version: String,
     /// Release notes (truncated).
     pub notes: String,
@@ -191,7 +189,6 @@ fn fetch_latest_release() -> Result<CheckOutcome, String> {
 
     Ok(CheckOutcome::Available(UpdateInfo {
         version: tag.trim_start_matches('v').trim_start_matches('V').to_string(),
-        tag,
         notes,
         archive_url,
         archive_size,

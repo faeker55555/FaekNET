@@ -13,9 +13,6 @@
 
 use std::path::PathBuf;
 
-/// The app is always autostarted minimized to the tray.
-pub const AUTOSTART_ARGS: &str = "--minimized";
-
 pub fn is_enabled() -> bool {
     platform::is_enabled()
 }

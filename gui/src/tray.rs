@@ -36,6 +36,11 @@ pub struct Tray {
 /// GUI then simply runs without a tray and the close-to-tray behavior
 /// degrades to a normal close.
 pub fn build() -> Option<Tray> {
+    #[cfg(target_os = "linux")]
+    {
+        gtk::init().ok()?;
+    }
+
     let icon = Icon::from_rgba(include_bytes!("../assets/tray_icon.rgba").to_vec(), 32, 32).ok()?;
 
     let menu = Menu::new();

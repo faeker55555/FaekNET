@@ -342,7 +342,7 @@ pub struct MeshState {
     /// (who never directly exported/imported with us) learn how to reach
     /// us at all.
     my_public_addr: Mutex<Option<(SocketAddr, u32)>>,
-    /// Our own best-guess LAN-facing address (e.g. 192.168.1.74:54321),
+    /// Our own best-guess LAN-facing address (e.g. 192.168.1.20:54321),
     /// discovered once at startup via `stun::discover_local_addr()` and
     /// gossiped alongside `my_public_addr` -- see `gossip::GossipEntry`'s
     /// `lan_addr` field and `peer.rs`'s `lan_candidate` for why this
@@ -1866,8 +1866,8 @@ mod tests {
     fn new_peer_learned_via_gossip_stores_its_lan_candidate() {
         let state = test_state();
         let peer_ip: Ipv4Addr = "10.0.0.20".parse().unwrap();
-        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
-        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        let public_addr: SocketAddr = "203.0.113.7:1024".parse().unwrap();
+        let lan_addr: SocketAddr = "192.168.1.20:54321".parse().unwrap();
         let entry = GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 1000, Some(lan_addr));
         state.apply_gossip_entry(&entry);
         assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
@@ -1877,11 +1877,11 @@ mod tests {
     fn existing_peer_gains_a_lan_candidate_from_a_later_gossip_entry() {
         let state = test_state();
         let peer_ip: Ipv4Addr = "10.0.0.21".parse().unwrap();
-        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
+        let public_addr: SocketAddr = "203.0.113.7:1024".parse().unwrap();
         state.learn_peer_from_ping(peer_ip, public_addr);
         assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), None);
 
-        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        let lan_addr: SocketAddr = "192.168.1.20:54321".parse().unwrap();
         let entry = GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 2000, Some(lan_addr));
         state.apply_gossip_entry(&entry);
         assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
@@ -1895,8 +1895,8 @@ mod tests {
         // candidate we already learned some other way.
         let state = test_state();
         let peer_ip: Ipv4Addr = "10.0.0.22".parse().unwrap();
-        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
-        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        let public_addr: SocketAddr = "203.0.113.7:1024".parse().unwrap();
+        let lan_addr: SocketAddr = "192.168.1.20:54321".parse().unwrap();
         state.apply_gossip_entry(&GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 1000, Some(lan_addr)));
         assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
 
@@ -2040,7 +2040,7 @@ mod tests {
 
     #[test]
     fn picks_the_only_real_adapter() {
-        let candidates = vec![candidate(5, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"])];
+        let candidates = vec![candidate(5, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.10"])];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((5, "Ethernet".to_string())));
     }
@@ -2058,7 +2058,7 @@ mod tests {
         // internet, so self-STUN would time out and retry forever.
         let candidates = vec![
             candidate(9, "Ethernet 3", "lanmesh0", &["10.66.0.1"]), // our own adapter, misleadingly named
-            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.11"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((3, "Wi-Fi".to_string())));
@@ -2071,7 +2071,7 @@ mod tests {
         // depth), the legacy name-prefix heuristic still applies.
         let candidates = vec![
             candidate(9, "lanmesh0", "lanmesh0", &["10.66.0.1"]),
-            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.11"]),
         ];
         let picked = pick_real_interface(&candidates, None);
         assert_eq!(picked, Some((3, "Wi-Fi".to_string())));
@@ -2081,7 +2081,7 @@ mod tests {
     fn excludes_cloudflare_warp_by_description() {
         let candidates = vec![
             candidate(9, "Ethernet 5", "Cloudflare WARP Interface Tunnel", &["100.96.0.5"]),
-            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
+            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.10"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((3, "Ethernet".to_string())));
@@ -2091,7 +2091,7 @@ mod tests {
     fn excludes_adapters_with_no_ipv4_address() {
         let candidates = vec![
             candidate(9, "Disabled NIC", "Some Adapter", &[]),
-            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
+            candidate(3, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.10"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((3, "Ethernet".to_string())));
@@ -2110,8 +2110,8 @@ mod tests {
     #[test]
     fn first_non_excluded_candidate_wins_when_multiple_real_nics_present() {
         let candidates = vec![
-            candidate(2, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.50"]),
-            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.77"]),
+            candidate(2, "Ethernet", "Realtek PCIe GbE Family Controller", &["192.168.1.10"]),
+            candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.11"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
         assert_eq!(picked, Some((2, "Ethernet".to_string())));

@@ -1,4 +1,5 @@
 /target
+/target/
 /dist
 .cargo/config.toml
 mesh.toml
@@ -10,3 +11,8 @@ extras/messenger_uploads/
 extras/messenger_certs/
 extras/messenger_accounts.json
 extras/__pycache__/
+
+# GUI preferences (created at runtime)
+gui.toml
+# Windows build artifacts
+*.exe

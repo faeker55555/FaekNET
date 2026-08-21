@@ -36,7 +36,7 @@ software**: any packet destined for your subnet's broadcast address
 flooded to every configured peer. This covers the overwhelming majority of
 LAN games, which discover each other via UDP broadcast. It will **not**
 help a game that requires raw non-IP Ethernet frames or IPX — those are
-rare today, but if you hit one, let me know and a true TAP-based (Linux
+rare today, but if you hit one, open an issue and a true TAP-based (Linux
 + a heavier Windows driver) variant would be the next step.
 
 ## Setup
@@ -149,8 +149,7 @@ sudo ./lan_mesh run
 ```
 Brings up the virtual adapter, starts listening, and begins sending
 keepalive/hole-punch packets to every configured peer every 15 seconds
-(this is what keeps NAT/CGNAT mappings alive, exactly like the fix we
-applied to the chat program earlier). Leave it running in a terminal while
+(this is what keeps NAT/CGNAT mappings alive). Leave it running in a terminal while
 you play. Once at least one packet has been exchanged, peers show as
 "reachable" in the periodic status log.
 
@@ -267,7 +266,7 @@ Features:
   periodic status log shows a live `~Nms` round-trip reading per peer, and
   `lan_mesh ping` can measure it on demand. The receive loop treats socket
   read-timeouts as "nothing yet", not a fatal error — directly addressing
-  the same class of bug we found and fixed in the earlier chat program.
+  the same class of bug the extras messenger originally hit.
 - **Address roaming is persisted to disk**: the first time a peer's
   observed address changes (including the very first packet from them),
   it's written back into `mesh.toml` immediately, not just kept in memory.
@@ -305,7 +304,7 @@ permanently stuck at "not yet reachable" even though both sides are
 online and self-STUN succeeded correctly.
 
 lan_mesh works around this automatically: every peer also discovers its
-own LAN-facing IP (e.g. `192.168.1.74`) at startup and gossips it
+own LAN-facing IP (e.g. `192.168.1.20`) at startup and gossips it
 alongside its public address as a same-network fallback candidate.
 Whenever both a public and a LAN candidate are known for a peer, the
 keepalive/hole-punch ticker pings *both* every 15s — whichever one
@@ -615,7 +614,7 @@ runtime-tested on an actual Windows machine with WARP installed** — there
 wasn't one available while building this. If it needs a fix once you
 try it for real (e.g. a different adapter description string on your
 WARP version, or multiple physical NICs needing better ranking than
-"first match wins"), tell me what you see and it's a quick follow-up.
+"first match wins"), please report what you see.
 
 ### Fixed: self-STUN never resolving on Windows ("infinite resolving of public address")
 
@@ -650,8 +649,8 @@ can't regress silently.
 ### Still stuck on Windows self-STUN? New diagnostic/workaround tools
 
 The interface-selection fix above turned out **not** to fix every
-Windows self-STUN failure — one user tried it and it made no difference
-for them. Since their exact Windows network environment can't be
+Windows self-STUN failure — one report showed no difference
+for that machine. Since their exact Windows network environment can't be
 reproduced or inspected from here, rather than guess again blindly at
 another adapter-selection heuristic, the mesh now gives you direct
 tools to work around or diagnose the problem yourself:
@@ -690,12 +689,12 @@ tools to work around or diagnose the problem yourself:
   self-STUN to succeed.
 
 All of the above are implemented, unit-tested (config, engine, and CLI
-layers), and verified against a real live-running mesh in this sandbox
+layers), and verified against a real live-running mesh
 (manual override, cache-on-success, cache-seeding on startup, and
 WARP-compat-off all confirmed via `mesh.toml` and log output during an
 actual `lan_mesh run`). **Honest caveat: none of this is confirmed to
-be a fix for the specific Windows self-STUN failure that was reported
-this session** — the root cause on that machine is still unknown, since
+be a fix for the specific Windows self-STUN failure reported
+above** — the root cause on that machine is still unknown, since
 it can't be reproduced here. These are meant as tools to get you
 working again (manual override / cache) and to help narrow down the
 cause (WARP-compat toggle) rather than a guaranteed resolution.
@@ -718,17 +717,16 @@ the guard before entering the `if`/`else`.
   tool alone.** If `myaddr` shows different ports per STUN server for you
   *and* the same is true for a peer you're trying to reach, classic UDP
   hole punching cannot establish a direct path (this is a fundamental NAT
-  traversal limitation, not a bug — see the earlier discussion about your
-  peer1's CGNAT). The practical fix in that case is a small relay server
-  with a real public IP; ask if you want one built.
-- **No relay/rendezvous fallback yet.** This is intentionally "pure P2P,
-  no VPN/relay services" per your request — if direct P2P fails for a
-  given pair, the mesh will not silently route around it.
+  traversal limitation, not a bug). The practical fix in that case is
+a relay server with a real public IP (out of scope here by design).
+- **No relay/rendezvous fallback.** This is intentionally "pure P2P,
+  no VPN/relay services" — if direct P2P fails for a given pair, the
+  mesh will not silently route around it.
 - **IPv4 only.** IPv6 game traffic isn't handled.
 - **Windows VPN-avoidance logic is compile-verified, not yet
   runtime-verified** on real Windows/WARP hardware — see "Working around
   always-on VPNs" above.
 - Tested so far primarily on Linux (including real multi-node mesh runs);
   the Windows binaries cross-compile cleanly and have the same feature
-  set, but haven't been run on an actual Windows machine in this
-  session — please report back if you hit anything odd there.
+  set, but haven't been run on an actual Windows machine yet —
+  please report back if you hit anything odd there.

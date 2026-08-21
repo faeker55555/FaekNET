@@ -47,7 +47,7 @@ pub struct GossipEntry {
     /// Only meaningful when `service_name` is non-empty.
     pub service_port: u16,
     /// The sender's own best-guess LAN-facing address (e.g.
-    /// 192.168.1.74:54321), gossiped alongside their public address so a
+    /// 192.168.1.20:54321), gossiped alongside their public address so a
     /// peer that turns out to share the same router/public IP has a
     /// same-LAN fallback to try -- see `peer.rs`'s `lan_candidate` for how
     /// it's used. `None` when the sender couldn't determine a local
@@ -348,14 +348,14 @@ mod tests {
         let entries = vec![GossipEntry::peer_with_lan(
             Ipv4Addr::new(10, 66, 0, 10),
             "server",
-            "146.158.102.129:1024".parse().unwrap(),
+            "203.0.113.7:1024".parse().unwrap(),
             1_700_000_000,
-            Some("192.168.1.74:54321".parse().unwrap()),
+            Some("192.168.1.20:54321".parse().unwrap()),
         )];
         let payloads = build_payloads(&entries);
         let parsed = parse_payload(&payloads[0]);
         assert_eq!(parsed, entries);
-        assert_eq!(parsed[0].lan_addr, Some("192.168.1.74:54321".parse().unwrap()));
+        assert_eq!(parsed[0].lan_addr, Some("192.168.1.20:54321".parse().unwrap()));
     }
 
     #[test]

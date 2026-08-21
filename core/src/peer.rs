@@ -52,7 +52,7 @@ pub struct Peer {
     /// friend types in about someone else.
     services: RwLock<Vec<(String, u16)>>,
     /// This peer's self-reported LAN-facing address (e.g.
-    /// 192.168.1.74:54321), learned via gossip (see
+    /// 192.168.1.20:54321), learned via gossip (see
     /// `gossip::GossipEntry::lan_addr`). Kept entirely separate from
     /// `confirmed_addr`: it's a *candidate* to additionally probe, never
     /// something `current_send_addr()` returns directly, since it's only

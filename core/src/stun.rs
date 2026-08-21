@@ -91,7 +91,7 @@ fn parse_response(data: &[u8], tx_id: &[u8; 12]) -> Option<SocketAddr> {
 }
 
 /// Best-effort discovery of this machine's own LAN-facing IPv4 address,
-/// e.g. 192.168.1.74. Used to build a same-LAN fallback candidate address
+/// e.g. 192.168.1.20. Used to build a same-LAN fallback candidate address
 /// for a peer (see `peer.rs`'s `lan_candidate`) -- when two peers share
 /// the same public IP (behind the same router), the public path often
 /// can't be used at all: it depends on the router supporting NAT

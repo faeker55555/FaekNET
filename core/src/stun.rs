@@ -90,6 +90,34 @@ fn parse_response(data: &[u8], tx_id: &[u8; 12]) -> Option<SocketAddr> {
     result
 }
 
+/// Best-effort discovery of this machine's own LAN-facing IPv4 address,
+/// e.g. 192.168.1.74. Used to build a same-LAN fallback candidate address
+/// for a peer (see `peer.rs`'s `lan_candidate`) -- when two peers share
+/// the same public IP (behind the same router), the public path often
+/// can't be used at all: it depends on the router supporting NAT
+/// hairpin/loopback (sending a packet to your own WAN IP and having it
+/// routed back inward), which many consumer routers simply don't do.
+/// Reaching each other via LAN IPs instead sidesteps the router (and its
+/// hairpin support or lack thereof) entirely.
+///
+/// This never actually sends any traffic: connecting a UDP socket only
+/// asks the OS routing table which local address *would* be used to
+/// reach `target`, without transmitting a single packet (UDP `connect()`
+/// is purely a local kernel-side operation until you `send`). The address
+/// 8.8.8.8:80 is used only as a plausible "public internet host" target
+/// to force the OS to pick our real outbound-facing interface, the same
+/// well-known technique `get_real_interface`'s callers rely on elsewhere
+/// in this codebase -- no packet to 8.8.8.8 is ever sent, and no
+/// connectivity to it is required for this to work.
+pub fn discover_local_addr() -> Option<std::net::Ipv4Addr> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) => Some(v4),
+        std::net::IpAddr::V6(_) => None,
+    }
+}
+
 /// Binds a UDP socket to `local_port` and asks a STUN server what external
 /// ip:port that mapping became. Returns None on any failure (DNS, timeout,
 /// unparseable response).

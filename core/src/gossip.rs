@@ -46,6 +46,13 @@ pub struct GossipEntry {
     pub service_name: String,
     /// Only meaningful when `service_name` is non-empty.
     pub service_port: u16,
+    /// The sender's own best-guess LAN-facing address (e.g.
+    /// 192.168.1.74:54321), gossiped alongside their public address so a
+    /// peer that turns out to share the same router/public IP has a
+    /// same-LAN fallback to try -- see `peer.rs`'s `lan_candidate` for how
+    /// it's used. `None` when the sender couldn't determine a local
+    /// address, or (for service entries) simply not applicable.
+    pub lan_addr: Option<SocketAddr>,
 }
 
 impl GossipEntry {
@@ -60,6 +67,22 @@ impl GossipEntry {
             epoch_secs,
             service_name: String::new(),
             service_port: 0,
+            lan_addr: None,
+        }
+    }
+
+    /// Same as `peer`, but also carries the sender's own LAN-facing
+    /// candidate address (see `lan_addr`'s doc comment).
+    pub fn peer_with_lan(
+        virtual_ip: Ipv4Addr,
+        name: impl Into<String>,
+        addr: SocketAddr,
+        epoch_secs: u32,
+        lan_addr: Option<SocketAddr>,
+    ) -> GossipEntry {
+        GossipEntry {
+            lan_addr,
+            ..GossipEntry::peer(virtual_ip, name, addr, epoch_secs)
         }
     }
 
@@ -82,6 +105,7 @@ impl GossipEntry {
             epoch_secs,
             service_name: service.into(),
             service_port: port,
+            lan_addr: None,
         }
     }
 
@@ -120,6 +144,21 @@ fn build_single_payload(entries: &[GossipEntry]) -> Vec<u8> {
         out.push(service_len as u8);
         out.extend_from_slice(&service_bytes[..service_len]);
         out.extend_from_slice(&entry.service_port.to_be_bytes());
+        // Optional LAN candidate: a 1-byte presence flag followed by 6
+        // bytes (IPv4 + port) if present, 0 bytes otherwise. Appended
+        // after every other field (including the pre-existing service
+        // fields) so older builds that don't know about it simply stop
+        // parsing at the byte they already understood -- see
+        // `parse_payload`'s tolerant trailing-field handling below, the
+        // same pattern already used to add the service fields.
+        match entry.lan_addr {
+            Some(SocketAddr::V4(lan)) => {
+                out.push(1);
+                out.extend_from_slice(&lan.ip().octets());
+                out.extend_from_slice(&lan.port().to_be_bytes());
+            }
+            _ => out.push(0),
+        }
     }
     out
 }
@@ -176,6 +215,26 @@ pub fn parse_payload(data: &[u8]) -> Vec<GossipEntry> {
             (String::new(), 0)
         };
 
+        // Optional LAN candidate, appended after the service fields (see
+        // `build_single_payload`). Tolerated as absent for the same
+        // reason the service fields are: an older-format packet, or one
+        // truncated for any other reason, still yields a fully usable
+        // entry minus this one optional field.
+        let lan_addr = if offset + 1 <= data.len() {
+            let present = data[offset] != 0;
+            offset += 1;
+            if present && offset + 6 <= data.len() {
+                let lan_ip = Ipv4Addr::new(data[offset], data[offset + 1], data[offset + 2], data[offset + 3]);
+                let lan_port = u16::from_be_bytes([data[offset + 4], data[offset + 5]]);
+                offset += 6;
+                Some(SocketAddr::from((lan_ip, lan_port)))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         entries.push(GossipEntry {
             virtual_ip,
             name,
@@ -183,6 +242,7 @@ pub fn parse_payload(data: &[u8]) -> Vec<GossipEntry> {
             epoch_secs,
             service_name,
             service_port,
+            lan_addr,
         });
     }
     entries
@@ -281,6 +341,57 @@ mod tests {
         let payloads = build_payloads(&entries);
         let parsed = parse_payload(&payloads[0]);
         assert_eq!(parsed, entries);
+    }
+
+    #[test]
+    fn roundtrip_with_lan_candidate() {
+        let entries = vec![GossipEntry::peer_with_lan(
+            Ipv4Addr::new(10, 66, 0, 10),
+            "server",
+            "146.158.102.129:1024".parse().unwrap(),
+            1_700_000_000,
+            Some("192.168.1.74:54321".parse().unwrap()),
+        )];
+        let payloads = build_payloads(&entries);
+        let parsed = parse_payload(&payloads[0]);
+        assert_eq!(parsed, entries);
+        assert_eq!(parsed[0].lan_addr, Some("192.168.1.74:54321".parse().unwrap()));
+    }
+
+    #[test]
+    fn no_lan_candidate_roundtrips_as_none() {
+        let entries = vec![GossipEntry::peer(
+            Ipv4Addr::new(10, 66, 0, 3),
+            "carol",
+            "203.0.113.9:54321".parse().unwrap(),
+            100,
+        )];
+        let payloads = build_payloads(&entries);
+        let parsed = parse_payload(&payloads[0]);
+        assert_eq!(parsed[0].lan_addr, None);
+    }
+
+    #[test]
+    fn truncated_packet_missing_lan_flag_byte_still_parses_other_fields() {
+        // Simulates a packet from an OLDER build that doesn't know about
+        // the LAN-candidate field at all (i.e. it's simply absent from
+        // the wire, not zero-length) -- everything up through the
+        // service fields must still parse correctly, with lan_addr
+        // defaulting to None rather than the whole entry being dropped.
+        let entries = vec![GossipEntry::peer(
+            Ipv4Addr::new(10, 66, 0, 3),
+            "carol",
+            "203.0.113.9:54321".parse().unwrap(),
+            100,
+        )];
+        let mut payload = build_single_payload(&entries);
+        // Strip the trailing "no LAN candidate" flag byte we just wrote,
+        // reproducing exactly what an old-format packet looks like.
+        payload.pop();
+        let parsed = parse_payload(&payload);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].virtual_ip, Ipv4Addr::new(10, 66, 0, 3));
+        assert_eq!(parsed[0].lan_addr, None);
     }
 
     #[test]

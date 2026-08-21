@@ -291,6 +291,39 @@ Features:
   when you can; this exists so a mistake or a one-off "just give them my
   card" doesn't permanently break connectivity.
 
+## Same-router peers (two of your own machines behind one home router)
+
+Multiple lan_mesh peers behind the same public IP works fine in general —
+each machine gets its own NAT port mapping and is addressed independently,
+same as if they were on opposite sides of the planet. But two peers that
+are *both* on your home LAN talking to each other over their shared
+**public** address specifically needs your router to support **NAT
+hairpin/loopback** (sending a packet to your own WAN IP and having the
+router route it back inward to the right internal host) — a lot of
+consumer routers simply don't do this, which shows up as one peer
+permanently stuck at "not yet reachable" even though both sides are
+online and self-STUN succeeded correctly.
+
+lan_mesh works around this automatically: every peer also discovers its
+own LAN-facing IP (e.g. `192.168.1.74`) at startup and gossips it
+alongside its public address as a same-network fallback candidate.
+Whenever both a public and a LAN candidate are known for a peer, the
+keepalive/hole-punch ticker pings *both* every 15s — whichever one
+actually gets a reply becomes the address used for real traffic (via the
+same `observe()`-always-wins logic that already handles normal NAT
+roaming), with zero manual configuration and no relay/third party
+involved. If the two peers really are on the same LAN, this converges
+onto the direct LAN path automatically, typically within one keepalive
+interval; if they're on genuinely different networks, the LAN probe just
+never gets a reply and is silently ignored, same as pinging any other
+unreachable address.
+
+This is on by default and needs nothing from you — but if you'd rather
+skip the wait, you can still manually point a peer's `public_ip`/
+`public_port` at the other machine's LAN IP directly in `mesh.toml`
+(works today regardless of this feature, and is a fine permanent choice
+for two machines you know will always be on the same LAN).
+
 ## Does everyone need everyone? (mesh topology)
 
 No, not anymore. **Peers gossip their known peer table to each other**

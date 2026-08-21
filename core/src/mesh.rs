@@ -342,6 +342,15 @@ pub struct MeshState {
     /// (who never directly exported/imported with us) learn how to reach
     /// us at all.
     my_public_addr: Mutex<Option<(SocketAddr, u32)>>,
+    /// Our own best-guess LAN-facing address (e.g. 192.168.1.74:54321),
+    /// discovered once at startup via `stun::discover_local_addr()` and
+    /// gossiped alongside `my_public_addr` -- see `gossip::GossipEntry`'s
+    /// `lan_addr` field and `peer.rs`'s `lan_candidate` for why this
+    /// exists: it's what lets two peers behind the same router/public IP
+    /// (where NAT hairpin/loopback often isn't supported) find each other
+    /// over the LAN instead. `None` if local-address discovery failed, or
+    /// on a machine with no real network interface at all.
+    my_lan_addr: Option<SocketAddr>,
     self_stun: SelfStunWaiter,
     /// Kept around so that when a peer's address is learned/roamed to a
     /// new value, or a brand new peer is discovered via gossip, we can
@@ -447,6 +456,15 @@ impl MeshState {
             // silently keep showing the stale placeholder forever.
             let name_changed = !entry.name.is_empty() && existing.name() != entry.name;
             existing.set_name(&entry.name);
+            // Unlike confirmed_addr, the LAN candidate has no
+            // freshness-epoch gating (see `Peer::set_lan_candidate`'s
+            // doc comment for why that's fine) -- but we only ever
+            // *overwrite* it when this entry actually carries one, so a
+            // re-gossiped entry that doesn't know about a candidate we
+            // already learned some other way can't erase it.
+            if entry.lan_addr.is_some() {
+                existing.set_lan_candidate(entry.lan_addr);
+            }
             if existing.observe_epoch(entry.addr, entry.epoch_secs) {
                 return Some(GossipOutcome::AddressUpdated {
                     virtual_ip: entry.virtual_ip,
@@ -466,8 +484,9 @@ impl MeshState {
         if self.peer_count() >= MAX_PEERS {
             return None;
         }
-        let peer = Arc::new(Peer::from_gossip(entry.virtual_ip, &entry.name, entry.addr, entry.epoch_secs));
-        self.peers.write().unwrap().insert(entry.virtual_ip, peer);
+        let peer = Peer::from_gossip(entry.virtual_ip, &entry.name, entry.addr, entry.epoch_secs);
+        peer.set_lan_candidate(entry.lan_addr);
+        self.peers.write().unwrap().insert(entry.virtual_ip, Arc::new(peer));
         Some(GossipOutcome::NewPeer {
             virtual_ip: entry.virtual_ip,
             name: entry.name.clone(),
@@ -646,14 +665,20 @@ fn build_local_gossip_entries(state: &MeshState) -> Vec<GossipEntry> {
         }
         let epoch = p.confirmed_epoch();
         let name = p.name();
-        entries.push(GossipEntry::peer(p.virtual_ip, &name, addr, epoch));
+        entries.push(GossipEntry::peer_with_lan(p.virtual_ip, &name, addr, epoch, p.lan_candidate()));
         for (service_name, port) in p.services() {
             entries.push(GossipEntry::service(p.virtual_ip, &name, addr, epoch, service_name, port));
         }
     }
 
     if let Some((addr, epoch)) = *state.my_public_addr.lock().unwrap() {
-        entries.push(GossipEntry::peer(state.my_virtual_ip, &state.my_name, addr, epoch));
+        entries.push(GossipEntry::peer_with_lan(
+            state.my_virtual_ip,
+            &state.my_name,
+            addr,
+            epoch,
+            state.my_lan_addr,
+        ));
         let my_services = state.config.lock().unwrap().services.clone();
         for service in my_services {
             entries.push(GossipEntry::service(
@@ -1017,6 +1042,16 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
     let dns_table = if dns_server_enabled { Some(dns::new_table()) } else { None };
     let (stun_wake_tx, stun_wake_rx) = mpsc::channel::<()>();
 
+    // Best-effort: discover our own LAN-facing IP once at startup, so we
+    // have a same-LAN fallback candidate to gossip -- see MeshState's
+    // `my_lan_addr` doc comment. Failure here (e.g. no real network
+    // interface) just means we won't offer a LAN candidate; the mesh
+    // still works exactly as before over the public path.
+    let my_lan_addr = stun::discover_local_addr();
+    if let Some(ip) = my_lan_addr {
+        log(&format!("Our LAN-facing address is {ip}:{listen_port} -- will be gossiped as a same-network fallback."));
+    }
+
     let state = Arc::new(MeshState {
         cipher,
         my_virtual_ip,
@@ -1024,6 +1059,7 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
         broadcast_addr,
         peers: RwLock::new(peers_map),
         my_public_addr: Mutex::new(None),
+        my_lan_addr: my_lan_addr.map(|ip| SocketAddr::from((ip, listen_port))),
         self_stun: SelfStunWaiter::new(),
         config: Mutex::new(config),
         domain_suffix,
@@ -1339,17 +1375,42 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                     break;
                 }
                 for peer in state.peers_snapshot() {
+                    let wire_plain = proto::build(proto::TYPE_PING, state.my_virtual_ip, &seq.to_be_bytes());
+                    let wire = state.cipher.seal(&wire_plain);
+                    let mut pinged = false;
                     if let Some(addr) = peer.current_send_addr() {
                         // A TYPE_PING doubles as the keepalive itself (it
                         // still refreshes the NAT mapping and updates
                         // last-seen via the PONG's observe() call), while
                         // additionally giving us a live RTT reading for
                         // the periodic status log.
-                        peer.record_ping_sent(seq);
-                        let wire_plain =
-                            proto::build(proto::TYPE_PING, state.my_virtual_ip, &seq.to_be_bytes());
-                        let wire = state.cipher.seal(&wire_plain);
                         let _ = sock.send_to(&wire, addr);
+                        pinged = true;
+                    }
+                    // Also probe the peer's self-reported LAN candidate,
+                    // if any and if it's a different address than the one
+                    // above -- this is what lets two peers behind the
+                    // same router/public IP (where the public path often
+                    // silently never works at all, since it depends on
+                    // NAT hairpin/loopback support most consumer routers
+                    // lack) find each other over the LAN instead. Cheap
+                    // and harmless to keep trying indefinitely on peers
+                    // that turn out to be on a different network: it's
+                    // just one extra small UDP packet every
+                    // KEEPALIVE_INTERVAL that will simply never get a
+                    // reply, exactly like pinging any other unreachable
+                    // address. Whichever candidate (public or LAN)
+                    // actually answers is what `Peer::observe()` promotes
+                    // to `confirmed_addr` on the receiving end -- no
+                    // separate "prefer LAN" logic needed here at all.
+                    if let Some(lan_addr) = peer.lan_candidate() {
+                        if Some(lan_addr) != peer.current_send_addr() {
+                            let _ = sock.send_to(&wire, lan_addr);
+                            pinged = true;
+                        }
+                    }
+                    if pinged {
+                        peer.record_ping_sent(seq);
                     }
                 }
                 seq = seq.wrapping_add(1);
@@ -1735,6 +1796,7 @@ mod tests {
             broadcast_addr: config.broadcast_addr(),
             peers: RwLock::new(HashMap::new()),
             my_public_addr: Mutex::new(None),
+            my_lan_addr: None,
             self_stun: SelfStunWaiter::new(),
             domain_suffix: config.me.domain_suffix.clone(),
             sync_hosts_file: config.me.sync_hosts_file,
@@ -1798,6 +1860,103 @@ mod tests {
             }
             other => panic!("expected AddressUpdated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn new_peer_learned_via_gossip_stores_its_lan_candidate() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.20".parse().unwrap();
+        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
+        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        let entry = GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 1000, Some(lan_addr));
+        state.apply_gossip_entry(&entry);
+        assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
+    }
+
+    #[test]
+    fn existing_peer_gains_a_lan_candidate_from_a_later_gossip_entry() {
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.21".parse().unwrap();
+        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
+        state.learn_peer_from_ping(peer_ip, public_addr);
+        assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), None);
+
+        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        let entry = GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 2000, Some(lan_addr));
+        state.apply_gossip_entry(&entry);
+        assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
+    }
+
+    #[test]
+    fn gossip_entry_without_a_lan_candidate_does_not_erase_a_previously_learned_one() {
+        // A peer might be re-gossiped by a third party who doesn't happen
+        // to know its LAN candidate (e.g. an older build, or simply a
+        // peer that never learned it) -- that must not blow away a LAN
+        // candidate we already learned some other way.
+        let state = test_state();
+        let peer_ip: Ipv4Addr = "10.0.0.22".parse().unwrap();
+        let public_addr: SocketAddr = "146.158.102.129:1024".parse().unwrap();
+        let lan_addr: SocketAddr = "192.168.1.74:54321".parse().unwrap();
+        state.apply_gossip_entry(&GossipEntry::peer_with_lan(peer_ip, "server", public_addr, 1000, Some(lan_addr)));
+        assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
+
+        // Fresher entry, but with no LAN candidate attached.
+        state.apply_gossip_entry(&GossipEntry::peer(peer_ip, "server", public_addr, 2000));
+        assert_eq!(state.get_peer(&peer_ip).unwrap().lan_candidate(), Some(lan_addr));
+    }
+
+    #[test]
+    fn same_router_scenario_lan_candidate_recovers_when_public_path_is_unreachable() {
+        // Reproduces the real-world bug report this feature fixes: two
+        // peers behind the same router/public IP where the "public" path
+        // is a dead end (either because the router doesn't support NAT
+        // hairpin/loopback, or -- as modeled here -- because it's simply
+        // some address nothing is listening on), but they're really on
+        // the same LAN and reachable that way instead.
+        //
+        // Uses real UDP sockets on loopback rather than the full
+        // mesh::start() (which needs a real TUN adapter and root/admin
+        // privileges) -- this exercises the actual send-to-both-
+        // candidates-then-let-observe()-pick-the-winner mechanism from
+        // the keepalive ticker, just without the TUN/thread machinery
+        // around it.
+        use std::net::UdpSocket;
+
+        // Stands in for the peer's real LAN-facing socket -- this one
+        // actually receives our probe.
+        let lan_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let lan_addr = lan_sock.local_addr().unwrap();
+        lan_sock.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+
+        // Stands in for the "public" address: a real bound-but-abandoned
+        // socket, immediately dropped so the port becomes unreachable --
+        // sends to it are accepted by the OS but nothing is listening,
+        // modeling a router that can't hairpin traffic back to itself.
+        let dead_sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let dead_addr = dead_sock.local_addr().unwrap();
+        drop(dead_sock);
+
+        let peer = Peer::from_gossip("10.0.0.30".parse().unwrap(), "server", dead_addr, 1000);
+        peer.set_lan_candidate(Some(lan_addr));
+        assert_eq!(peer.current_send_addr(), Some(dead_addr));
+
+        // Exactly what the keepalive ticker does: probe both candidates.
+        let prober = UdpSocket::bind("127.0.0.1:0").unwrap();
+        prober.send_to(b"ping-public", dead_addr).unwrap();
+        prober.send_to(b"ping-lan", lan_addr).unwrap();
+
+        // Only the LAN socket actually receives anything.
+        let mut buf = [0u8; 64];
+        let (n, from) = lan_sock.recv_from(&mut buf).expect("LAN candidate should have received the probe");
+        assert_eq!(&buf[..n], b"ping-lan");
+        assert_eq!(from, prober.local_addr().unwrap());
+
+        // The receiving side would now reply, and our observe() on
+        // receiving that reply is what promotes the LAN address to
+        // confirmed_addr -- modeled directly here since that part is
+        // already covered by peer::tests.
+        assert!(peer.observe(lan_addr));
+        assert_eq!(peer.current_send_addr(), Some(lan_addr));
     }
 
     #[test]

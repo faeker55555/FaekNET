@@ -51,6 +51,20 @@ pub struct Peer {
     /// self-advertised by the machine that hosts them, not something a
     /// friend types in about someone else.
     services: RwLock<Vec<(String, u16)>>,
+    /// This peer's self-reported LAN-facing address (e.g.
+    /// 192.168.1.74:54321), learned via gossip (see
+    /// `gossip::GossipEntry::lan_addr`). Kept entirely separate from
+    /// `confirmed_addr`: it's a *candidate* to additionally probe, never
+    /// something `current_send_addr()` returns directly, since it's only
+    /// useful when we're actually on the same LAN as the peer -- which we
+    /// can't know in advance, only by trying it and seeing if a PONG ever
+    /// comes back from it. See `mesh.rs`'s keepalive/hole-punch ticker,
+    /// which sends a PING to both this and the normal send address
+    /// whenever both exist; ordinary `observe()` on whichever one
+    /// actually answers is what promotes it to `confirmed_addr` -- no
+    /// separate "prefer LAN" logic is needed, direct observation already
+    /// always wins.
+    lan_candidate: RwLock<Option<SocketAddr>>,
 }
 
 impl Peer {
@@ -66,6 +80,7 @@ impl Peer {
             last_rtt_ms: AtomicI64::new(-1),
             pending_pings: Mutex::new(std::collections::HashMap::new()),
             services: RwLock::new(Vec::new()),
+            lan_candidate: RwLock::new(None),
         }
     }
 
@@ -85,6 +100,7 @@ impl Peer {
             last_rtt_ms: AtomicI64::new(-1),
             pending_pings: Mutex::new(std::collections::HashMap::new()),
             services: RwLock::new(Vec::new()),
+            lan_candidate: RwLock::new(None),
         }
     }
 
@@ -114,6 +130,22 @@ impl Peer {
 
     pub fn confirmed_epoch(&self) -> u32 {
         self.confirmed_epoch.load(Ordering::Relaxed)
+    }
+
+    /// The most recent LAN-facing address this peer has gossiped about
+    /// itself, if any -- see the `lan_candidate` field's doc comment for
+    /// why this is separate from `current_send_addr()`.
+    pub fn lan_candidate(&self) -> Option<SocketAddr> {
+        *self.lan_candidate.read().unwrap()
+    }
+
+    /// Records a freshly gossiped LAN candidate for this peer. Always
+    /// overwrites (unlike `confirmed_addr`, there's no freshness-epoch
+    /// tracking here) -- a LAN candidate that's gone stale is harmless to
+    /// keep probing since it's never used unless something actually
+    /// answers on it, so there's no correctness reason to gate updates.
+    pub fn set_lan_candidate(&self, addr: Option<SocketAddr>) {
+        *self.lan_candidate.write().unwrap() = addr;
     }
 
     /// Called whenever we receive and successfully authenticate a packet

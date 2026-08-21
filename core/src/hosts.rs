@@ -23,8 +23,8 @@ use std::io;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 
-const BEGIN_MARKER: &str = "# >>> lan_mesh managed block -- do not edit by hand >>>";
-const END_MARKER: &str = "# <<< lan_mesh managed block <<<";
+const BEGIN_MARKER: &str = "# >>> meow-meow managed block -- do not edit by hand >>>";
+const END_MARKER: &str = "# <<< meow-meow managed block <<<";
 
 /// One name -> address mapping this module should ensure exists.
 #[derive(Debug, Clone)]
@@ -222,7 +222,7 @@ pub fn sync(entries: &[HostEntry]) -> io::Result<()> {
 
 fn push_block(out_lines: &mut Vec<String>, entries: &[HostEntry]) {
     out_lines.push(BEGIN_MARKER.to_string());
-    out_lines.push("# Managed automatically by lan_mesh -- edits here will be overwritten.".to_string());
+    out_lines.push("# Managed automatically by meow-meow -- edits here will be overwritten.".to_string());
     for entry in entries {
         out_lines.push(format!("{}\t{}", entry.virtual_ip, entry.hostname));
     }
@@ -244,7 +244,7 @@ pub fn remove_block() -> io::Result<()> {
 fn write_atomically(path: &PathBuf, content: &str) -> io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let tmp_path = dir.join(format!(
-        ".lan_mesh_hosts_tmp_{}",
+        ".meow-meow_hosts_tmp_{}",
         std::process::id()
     ));
     fs::write(&tmp_path, content)?;
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn sync_writes_and_replaces_managed_block_only() {
-        let dir = std::env::temp_dir().join(format!("lan_mesh_hosts_test_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("meow-meow_hosts_test_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("hosts");
         std::fs::write(&path, "127.0.0.1 localhost\nsome.other.entry 1.2.3.4\n").unwrap();

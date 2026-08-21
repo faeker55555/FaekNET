@@ -1,8 +1,8 @@
 {
-  "app_name": "мяу-мяу net",
-  "app_title": "мяу-мяу",
-  "window_title": "мяу-мяу",
-  "tray_tooltip": "мяу-мяу",
-  "menu_open": "Открыть мяу-мяу",
-  "menu_quit": "Выйти"
+  "app_name": "meow-meow net",
+  "app_title": "meow-meow",
+  "window_title": "meow-meow",
+  "tray_tooltip": "meow-meow",
+  "menu_open": "Open meow-meow",
+  "menu_quit": "Quit"
 }

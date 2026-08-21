@@ -2182,11 +2182,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "lan_mesh_browser"
+name = "meow_meow_browser"
 version = "0.31.0"
 dependencies = [
  "gtk",
- "lan_mesh_core",
+ "meow_meow_core",
  "serde",
  "serde_json",
  "tao",
@@ -2194,14 +2194,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "lan_mesh_cli"
+name = "meow_meow_cli"
 version = "0.31.0"
 dependencies = [
- "lan_mesh_core",
+ "meow_meow_core",
 ]
 
 [[package]]
-name = "lan_mesh_core"
+name = "meow_meow_core"
 version = "0.31.0"
 dependencies = [
  "base64 0.22.1",
@@ -2217,13 +2217,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "lan_mesh_gui"
+name = "meow_meow_gui"
 version = "0.31.0"
 dependencies = [
  "eframe",
  "egui",
  "gtk",
- "lan_mesh_core",
+ "meow_meow_core",
  "serde",
  "serde_json",
  "toml",

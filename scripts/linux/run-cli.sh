@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the lan_mesh CLI. Passes through all arguments, e.g.:
+# Runs the meow-meow CLI. Passes through all arguments, e.g.:
 #   ./run-cli.sh init
 #   ./run-cli.sh export
 #   ./run-cli.sh run
@@ -15,9 +15,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 NEEDS_ROOT_CMD="run"
 
 if [ "${1:-}" = "$NEEDS_ROOT_CMD" ] && [ "$(id -u)" -ne 0 ]; then
-    echo "lan_mesh run needs root privileges to create its virtual network adapter."
+    echo "meow-meow run needs root privileges to create its virtual network adapter."
     echo "Re-running with sudo..."
-    exec sudo -E ./lan_mesh "$@"
+    exec sudo -E ./meow-meow "$@"
 fi
 
-exec ./lan_mesh "$@"
+exec ./meow-meow "$@"

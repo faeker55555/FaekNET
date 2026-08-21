@@ -108,7 +108,7 @@ const VPN_DESCRIPTION_MARKERS: &[&str] = &[
 /// adapter, which the description-based VPN markers and any name-prefix
 /// heuristic can both fail to catch. This is the fix for a real bug:
 /// tun-rs's Windows/wintun backend defaults an adapter's *driver
-/// description* to its dev name (e.g. "lanmesh0") when no separate
+/// description* to its dev name (e.g. "meowmesh0") when no separate
 /// description is given, which does NOT contain "wintun" -- so the
 /// description-based VPN_DESCRIPTION_MARKERS check silently fails to
 /// catch it, and Windows doesn't reliably preserve the requested adapter
@@ -1013,7 +1013,7 @@ pub fn start(config: Config) -> std::io::Result<MeshHandle> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     if config.peers.is_empty() {
-        log("No peers configured yet -- waiting for a bootstrap peer (import a card with `lan_mesh import`).");
+        log("No peers configured yet -- waiting for a bootstrap peer (import a card with `meow-meow import`).");
     } else {
         log(&format!(
             "Starting with {} known peer(s); more may be auto-discovered via gossip.",
@@ -1102,7 +1102,7 @@ Local mesh domain names will still work via the hosts file if enabled."
     refresh_domain_names(&state);
 
     // ---- Set up the virtual network adapter ----
-    let dev_name = std::env::var("LAN_MESH_DEV_NAME").unwrap_or_else(|_| "lanmesh0".to_string());
+    let dev_name = std::env::var("MEOW_MEOW_DEV_NAME").unwrap_or_else(|_| "meowmesh0".to_string());
     let dev = DeviceBuilder::new()
         .name(dev_name)
         .ipv4(my_virtual_ip, prefix, None)
@@ -1120,7 +1120,7 @@ On Windows this needs Administrator and wintun.dll next to the executable."
         })?;
     log(&format!(
         "Virtual adapter up: {} ({}/{})",
-        dev.name().unwrap_or_else(|_| "lanmesh0".to_string()),
+        dev.name().unwrap_or_else(|_| "meowmesh0".to_string()),
         my_virtual_ip,
         prefix
     ));
@@ -1279,7 +1279,7 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                     proto::TYPE_PING if payload.len() == 8 => {
                         // Echo the nonce straight back as a PONG, over UDP
                         // directly -- this deliberately bypasses the TUN
-                        // device so `lan_mesh ping` works without root and
+                        // device so `meow-meow ping` works without root and
                         // measures the mesh transport's own latency, not
                         // anything game/OS-routing related.
                         let pong_plain =
@@ -1607,7 +1607,7 @@ pub fn run(config: Config) -> std::io::Result<()> {
 /// Standalone latency test: sends a handful of encrypted PING packets to
 /// every configured peer and reports round-trip time / packet loss.
 /// Deliberately does NOT create the virtual TUN adapter, so this works
-/// without root/Administrator and can be run even while `lan_mesh run` is
+/// without root/Administrator and can be run even while `meow-meow run` is
 /// not active elsewhere (though it obviously can't measure anything for a
 /// peer whose mesh isn't currently running to answer).
 pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()> {
@@ -1615,7 +1615,7 @@ pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     if config.peers.is_empty() {
-        println!("No peers configured. Use `lan_mesh add-peer` or `lan_mesh import`.");
+        println!("No peers configured. Use `meow-meow add-peer` or `meow-meow import`.");
         return Ok(());
     }
 
@@ -2057,7 +2057,7 @@ mod tests {
         // self-STUN probe) to itself -- which has no route to the
         // internet, so self-STUN would time out and retry forever.
         let candidates = vec![
-            candidate(9, "Ethernet 3", "lanmesh0", &["10.66.0.1"]), // our own adapter, misleadingly named
+            candidate(9, "Ethernet 3", "meowmesh0", &["10.66.0.1"]), // our own adapter, misleadingly named
             candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.11"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));
@@ -2070,7 +2070,7 @@ mod tests {
         // happen at the point this is called in practice, but defence in
         // depth), the legacy name-prefix heuristic still applies.
         let candidates = vec![
-            candidate(9, "lanmesh0", "lanmesh0", &["10.66.0.1"]),
+            candidate(9, "meowmesh0", "meowmesh0", &["10.66.0.1"]),
             candidate(3, "Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", &["192.168.1.11"]),
         ];
         let picked = pick_real_interface(&candidates, None);
@@ -2100,7 +2100,7 @@ mod tests {
     #[test]
     fn returns_none_when_only_our_own_adapter_and_vpns_are_present() {
         let candidates = vec![
-            candidate(9, "lanmesh0", "lanmesh0", &["10.66.0.1"]),
+            candidate(9, "meowmesh0", "meowmesh0", &["10.66.0.1"]),
             candidate(4, "Ethernet 5", "Cloudflare WARP Interface Tunnel", &["100.96.0.5"]),
         ];
         let picked = pick_real_interface(&candidates, Some("10.66.0.1".parse().unwrap()));

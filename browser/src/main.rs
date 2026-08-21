@@ -3,14 +3,14 @@
 // a console so stderr/panic output stays visible during development.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! lan_mesh's in-app browser: a small standalone window with its own
+//! meow-meow's in-app browser: a small standalone window with its own
 //! chrome (address bar + back/forward/reload/home, styled to match the
 //! main GUI's dark "ops console" identity) wrapping a real embedded
 //! webview for the actual page content. See Cargo.toml's top comment for
 //! why this is a separate process from the main native GUI rather than a
 //! panel embedded inside it.
 //!
-//! Usage: `lan_mesh_browser [start-url]`. With no argument, starts on a
+//! Usage: `meow-meow_browser [start-url]`. With no argument, starts on a
 //! built-in "mesh home page" listing every currently-configured peer's
 //! local domain name as a clickable shortcut (read directly from
 //! mesh.toml in the current directory, same as the CLI/GUI do) -- so
@@ -95,7 +95,7 @@ const CHROME_HTML: &str = r##"<!DOCTYPE html>
   }
 </style></head>
 <body>
-  <div id="brand">LAN_MESH ▸ BROWSER</div>
+  <div id="brand">MEOW_MEOW ▸ BROWSER</div>
   <button id="back" title="Back">&#8592;</button>
   <button id="fwd" title="Forward">&#8594;</button>
   <button id="reload" title="Reload">&#8635;</button>
@@ -134,15 +134,15 @@ enum ChromeMsg {
 /// currently-known name -> address mapping as a clickable link, so the
 /// browser is immediately useful even with no starting URL.
 fn build_home_page() -> String {
-    let entries: Vec<(String, String)> = match lan_mesh_core::config::Config::load() {
+    let entries: Vec<(String, String)> = match meow-meow_core::config::Config::load() {
         Ok(cfg) => {
-            let mut infos = vec![lan_mesh_core::hosts::PeerDomainInfo {
+            let mut infos = vec![meow-meow_core::hosts::PeerDomainInfo {
                 name: cfg.me.name.clone(),
                 virtual_ip: cfg.me.virtual_ip,
                 services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
             }];
             for p in &cfg.peers {
-                infos.push(lan_mesh_core::hosts::PeerDomainInfo {
+                infos.push(meow-meow_core::hosts::PeerDomainInfo {
                     name: p.name.clone(),
                     virtual_ip: p.virtual_ip,
                     // Peers' own services are only known once the mesh is
@@ -152,7 +152,7 @@ fn build_home_page() -> String {
                     services: Vec::new(),
                 });
             }
-            lan_mesh_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
+            meow-meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
                 .into_iter()
                 .map(|e| (e.hostname, e.virtual_ip.to_string()))
                 .collect()
@@ -189,7 +189,7 @@ fn build_home_page() -> String {
         .i {{ font-size:11px; color:#5f6b72; margin-top:4px; }}
         .dim {{ color:#5f6b72; }}
         </style></head><body>
-        <h1>LAN_MESH ▸ MESH HOME</h1>
+        <h1>MEOW_MEOW ▸ MESH HOME</h1>
         <div class="sub">Local domain names on this mesh -- click to open.</div>
         {rows}
         </body></html>"##
@@ -273,7 +273,7 @@ fn main() -> wry::Result<()> {
 
     #[allow(unused_mut)]
     let mut window_builder = WindowBuilder::new()
-        .with_title("lan_mesh browser")
+        .with_title("meow-meow browser")
         .with_inner_size(LogicalSize::new(1000.0, 720.0));
     #[cfg(target_os = "linux")]
     {

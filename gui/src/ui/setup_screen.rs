@@ -1,7 +1,7 @@
 use eframe::egui;
-use lan_mesh_core::config::{Config, MeConfig};
-use lan_mesh_core::crypto::Cipher;
-use lan_mesh_core::share;
+use meow-meow_core::config::{Config, MeConfig};
+use meow-meow_core::crypto::Cipher;
+use meow-meow_core::share;
 
 use crate::app_state::{App, AppMode, SetupStage};
 use crate::theme;
@@ -13,7 +13,7 @@ pub fn draw(app: &mut App, ctx: &egui::Context) {
             ui.vertical_centered(|ui| {
                 ui.add_space(60.0);
                 ui.heading(
-                    egui::RichText::new("LAN_MESH").color(theme::TEAL).size(28.0).monospace(),
+                    egui::RichText::new("MEOW_MEOW").color(theme::TEAL).size(28.0).monospace(),
                 );
                 ui.label(
                     egui::RichText::new("pure peer-to-peer virtual subnet -- no central server")
@@ -122,7 +122,7 @@ fn draw_form(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "If a friend is already running lan_mesh, paste the card they sent you. \
+                    "If a friend is already running meow-meow, paste the card they sent you. \
                      Otherwise start solo -- you can add peers any time from the Peers screen, \
                      and once you're connected to just ONE other member, the rest of the mesh \
                      is discovered automatically.",

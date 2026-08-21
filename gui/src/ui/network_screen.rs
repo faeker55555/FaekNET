@@ -52,7 +52,7 @@ fn section_frame(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui
         });
 }
 
-fn draw_stat_grid(ui: &mut egui::Ui, snapshot: &lan_mesh_core::mesh::MeshSnapshot) {
+fn draw_stat_grid(ui: &mut egui::Ui, snapshot: &meow-meow_core::mesh::MeshSnapshot) {
     let online = snapshot
         .peers
         .iter()
@@ -94,7 +94,7 @@ fn stat_box(ui: &mut egui::Ui, label: &str, value: &str, value_color: egui::Colo
 /// A schematic hub-and-spoke diagram: "you" in the center, every peer
 /// around it, colored by liveness, with a dashed line marking
 /// gossip-auto-discovered peers vs. a solid line for manually-added ones.
-fn draw_mesh_map(ui: &mut egui::Ui, snapshot: &lan_mesh_core::mesh::MeshSnapshot) {
+fn draw_mesh_map(ui: &mut egui::Ui, snapshot: &meow-meow_core::mesh::MeshSnapshot) {
     section_frame(ui, "MESH TOPOLOGY", |ui| {
         let height = 260.0;
         let (rect, _response) =

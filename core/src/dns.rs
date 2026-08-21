@@ -319,7 +319,7 @@ pub fn try_auto_configure_system(dns_port: u16) -> Result<(), String> {
         ));
     }
     let resolv_conf = "/etc/resolv.conf";
-    let backup = "/etc/resolv.conf.lan_mesh_backup";
+    let backup = "/etc/resolv.conf.meow-meow_backup";
     let existing = std::fs::read_to_string(resolv_conf).unwrap_or_default();
     if existing.lines().next().map(str::trim) == Some("nameserver 127.0.0.1") {
         return Ok(()); // already applied, e.g. from a previous run
@@ -349,7 +349,7 @@ pub fn try_auto_configure_system(dns_port: u16) -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 pub fn try_undo_auto_configure() {
-    let backup = "/etc/resolv.conf.lan_mesh_backup";
+    let backup = "/etc/resolv.conf.meow-meow_backup";
     if let Ok(original) = std::fs::read_to_string(backup) {
         let _ = std::fs::write("/etc/resolv.conf", original);
         let _ = std::fs::remove_file(backup);

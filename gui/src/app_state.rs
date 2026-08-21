@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
-use lan_mesh_core::config::Config;
-use lan_mesh_core::mesh::{self, MeshHandle, MeshSnapshot};
+use meow-meow_core::config::Config;
+use meow-meow_core::mesh::{self, MeshHandle, MeshSnapshot};
 
 use crate::gui_settings::GuiSettings;
 use crate::{tray, updater};
@@ -20,7 +20,7 @@ pub fn new_log_buffer() -> LogBuffer {
 }
 
 pub fn install_log_sink(buffer: LogBuffer) {
-    lan_mesh_core::logsink::set_sink(Box::new(move |line: &str| {
+    meow-meow_core::logsink::set_sink(Box::new(move |line: &str| {
         let mut guard = buffer.lock().unwrap();
         guard.push_back(line.to_string());
         if guard.len() > MAX_LOG_LINES {

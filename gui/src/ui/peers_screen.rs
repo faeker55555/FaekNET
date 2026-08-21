@@ -74,7 +74,7 @@ fn header_row(ui: &mut egui::Ui, count: usize) {
 
 fn draw_peer_row(
     ui: &mut egui::Ui,
-    peer: &lan_mesh_core::mesh::PeerSnapshot,
+    peer: &meow-meow_core::mesh::PeerSnapshot,
     selected: bool,
     mut on_click: impl FnMut(),
 ) {
@@ -137,7 +137,7 @@ fn draw_peer_row(
     }
 }
 
-fn draw_peer_detail(ui: &mut egui::Ui, peer: &lan_mesh_core::mesh::PeerSnapshot) {
+fn draw_peer_detail(ui: &mut egui::Ui, peer: &meow-meow_core::mesh::PeerSnapshot) {
     ui.label(
         egui::RichText::new(&peer.name)
             .color(theme::TEXT_BRIGHT)

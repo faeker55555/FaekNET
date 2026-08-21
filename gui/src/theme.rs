@@ -1,4 +1,4 @@
-// Visual identity for lan_mesh's native GUI: a dark "network operations
+// Visual identity for meow-meow's native GUI: a dark "network operations
 // console" look -- sharp corners, monospace-forward, teal/amber signal
 // colors -- deliberately distinct from chat-app UI conventions (no rounded
 // bubbles, no colorful avatar-driven layout).

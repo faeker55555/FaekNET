@@ -1,5 +1,5 @@
 // Self-updater for the GUI (Linux + Windows), driven from the GitHub
-// Releases the CI workflow publishes (`lan_mesh-<tag>-<platform>.tar.gz`
+// Releases the CI workflow publishes (`meow-meow-<tag>-<platform>.tar.gz`
 // / `.zip` + `.sha256`; the older hand-made `LINUX.zip` / `WINDOWS.zip`
 // naming is also accepted).
 //
@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use std::os::windows::process::CommandExt;
 
 pub const REPO: &str = "faeker55555/FaekNET";
-const USER_AGENT: &str = "lan_mesh-updater";
+const USER_AGENT: &str = "meow-meow-updater";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -197,7 +197,7 @@ fn fetch_latest_release() -> Result<CheckOutcome, String> {
 }
 
 /// Picks the platform's release package from the assets list. Accepts
-/// both the CI naming (`lan_mesh-<tag>-linux-x86_64.tar.gz` /
+/// both the CI naming (`meow-meow-<tag>-linux-x86_64.tar.gz` /
 /// `...-windows-x86_64.zip`) and the legacy hand-made naming
 /// (`LINUX.zip` / `WINDOWS.zip`). Returns (archive url, size, optional
 /// .sha256 url).
@@ -397,7 +397,7 @@ fn run_with_progress(
 }
 
 fn http_get_text(url: &str) -> Result<String, String> {
-    let tmp = std::env::temp_dir().join(format!("lan_mesh_api_{}.json", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("meow-meow_api_{}.json", std::process::id()));
     download(url, &tmp, None)?;
     let text = fs::read_to_string(&tmp).map_err(|e| format!("cannot read response: {e}"))?;
     let _ = fs::remove_file(&tmp);
@@ -597,12 +597,12 @@ fn find_payload_dir(root: &Path) -> Result<PathBuf, String> {
                 .file_name()
                 .to_string_lossy()
                 .to_lowercase();
-            if name == "мяу-мяу_gui" || name == "мяу-мяу_gui.exe" {
+            if name == "meow-meow_gui" || name == "meow-meow_gui.exe" {
                 return Ok(path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| root.to_path_buf()));
             }
         }
     }
-    Err("downloaded package does not contain the lan_mesh GUI binary".to_string())
+    Err("downloaded package does not contain the meow-meow GUI binary".to_string())
 }
 
 /// Pairs each updated file in the package with its counterpart next to
@@ -615,9 +615,9 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
         .ok_or_else(|| "executable has no parent directory".to_string())?;
 
     let mut names: Vec<String> = vec![
-        "мяу-мяу_gui".to_string(),
-        "lan_mesh".to_string(),
-        "lan_mesh_browser".to_string(),
+        "meow-meow_gui".to_string(),
+        "meow-meow".to_string(),
+        "meow-meow_browser".to_string(),
     ];
     #[cfg(target_os = "windows")]
     {
@@ -646,7 +646,7 @@ fn is_gui_binary(path: &Path) -> bool {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    name == "мяу-мяу_gui" || name == "мяу-мяу_gui.exe"
+    name == "meow-meow_gui" || name == "meow-meow_gui.exe"
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -659,7 +659,7 @@ fn write_apply_script(work: &Path, pairs: &[(PathBuf, PathBuf)]) -> Result<PathB
     use std::os::unix::fs::PermissionsExt;
     let script = work.join("apply_update.sh");
     let pid = std::process::id();
-    let mut s = format!("#!/bin/bash\n# lan_mesh self-update\nwhile kill -0 {pid} 2>/dev/null; do sleep 0.25; done\n");
+    let mut s = format!("#!/bin/bash\n# meow-meow self-update\nwhile kill -0 {pid} 2>/dev/null; do sleep 0.25; done\n");
     for (from, to) in pairs {
         s.push_str(&format!(
             "cp -f '{}' '{}' 2>/dev/null || true\n",
@@ -693,7 +693,7 @@ fn spawn_apply(script: &Path) -> Result<(), String> {
 fn write_apply_script(work: &Path, pairs: &[(PathBuf, PathBuf)]) -> Result<PathBuf, String> {
     let script = work.join("apply_update.bat");
     let pid = std::process::id();
-    let mut s = String::from("@echo off\r\nrem lan_mesh self-update\r\n");
+    let mut s = String::from("@echo off\r\nrem meow-meow self-update\r\n");
     s.push_str(":wait\r\n");
     // ~1 second sleep that works without a console (unlike `timeout`).
     s.push_str("ping -n 2 127.0.0.1 >nul\r\n");
@@ -733,7 +733,7 @@ fn spawn_apply(script: &Path) -> Result<(), String> {
 // ---------------------------------------------------------------------
 
 fn install(state: &Arc<Mutex<UpdaterState>>, info: &UpdateInfo) -> Result<(), String> {
-    let work = std::env::temp_dir().join(format!("lan_mesh_update_{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!("meow-meow_update_{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| format!("cannot create temp dir: {e}"))?;
 

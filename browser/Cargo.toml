@@ -1,5 +1,5 @@
 [package]
-name = "lan_mesh_browser"
+name = "meow-meow_browser"
 version = "0.31.0"
 edition = "2021"
 
@@ -9,7 +9,7 @@ edition = "2021"
 # web UIs (game server admin panels, Plex/Jellyfin, self-hosted dashboards,
 # etc.) just work like they would in a normal browser.
 #
-# It's a separate binary/process from lan_mesh_gui rather than a widget
+# It's a separate binary/process from meow-meow_gui rather than a widget
 # embedded directly inside egui's own window for a concrete technical
 # reason: both `eframe` (winit) and `wry`'s windowing needs each want to
 # own an OS event loop on the calling thread, and running two full GUI
@@ -22,7 +22,7 @@ edition = "2021"
 # it's part of the same application suite, has its own matching visual
 # identity, and is opened directly from the mesh GUI with one click.
 [dependencies]
-lan_mesh_core = { path = "../core" }
+meow-meow_core = { path = "../core" }
 wry = "0.48"
 tao = "0.31"
 serde = { version = "1", features = ["derive"] }
@@ -43,5 +43,5 @@ serde_json = "1"
 gtk = "0.18"
 
 [[bin]]
-name = "мяу-мяу_browser"
+name = "meow-meow_browser"
 path = "src/main.rs"

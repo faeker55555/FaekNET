@@ -1,4 +1,4 @@
-# мяу-мяу net
+# meow-meow net
 
 A small, self-hosted, pure peer-to-peer **virtual LAN** — in the spirit of Radmin VPN /
 Hamachi, but with **no third-party relay, rendezvous server, or VPN service**. Every peer
@@ -8,7 +8,7 @@ simulated broadcast, TCP services are reachable by virtual IP or mesh domain nam
 traffic is encrypted end to end with ChaCha20-Poly1305.
 
 Linux + Windows. Two front ends, one engine: a **native GUI** (egui/eframe) and a **CLI**
-(`lan_mesh`), both built on the same `lan_mesh_core` library.
+(`meow-meow`), both built on the same `meow-meow_core` library.
 
 ## Features
 
@@ -58,7 +58,7 @@ next to the executables.
 ### 2. First-time setup (every machine)
 
 ```sh
-./lan_mesh init
+./meow-meow init
 ```
 
 Interactive: display name, a **unique virtual IP** on the shared subnet (e.g. `10.66.0.2`),
@@ -68,8 +68,8 @@ generate one; everyone else pastes it in.
 ### 3. Add peers
 
 ```sh
-./lan_mesh export                # prints a one-line peer card
-./lan_mesh import <their card>   # run on the other machine, and vice versa
+./meow-meow export                # prints a one-line peer card
+./meow-meow import <their card>   # run on the other machine, and vice versa
 ```
 
 The card encodes only name + virtual IP + public address — **not** the key — so it is safe to
@@ -79,7 +79,7 @@ gossip their tables and everyone else is discovered automatically.
 ### 4. Run
 
 ```sh
-sudo ./lan_mesh run              # or launch the GUI
+sudo ./meow-meow run              # or launch the GUI
 ```
 
 Games that scan/broadcast on local subnets will now find mesh peers automatically; to connect
@@ -89,24 +89,24 @@ directly, use the peer's virtual IP (or mesh name, see below).
 
 | Command | What it does |
 |---|---|
-| `lan_mesh init` | Interactive first-time setup (creates `mesh.toml`) |
-| `lan_mesh run` | Start the mesh (creates the virtual adapter) |
-| `lan_mesh export` / `lan_mesh import <card>` | Print / add a one-line peer card |
-| `lan_mesh add-peer` / `lan_mesh list-peers` | Manually add / review peers |
-| `lan_mesh ping [N]` | Measure RTT to every peer over the mesh transport |
-| `lan_mesh myaddr` | Discover your own external `ip:port` via STUN |
-| `lan_mesh genkey` | Generate a fresh pre-shared key |
-| `lan_mesh domains` | Show mesh domain names |
-| `lan_mesh add-service <name> <port>` | Advertise a service as `<service>.<yourname>.mesh` |
-| `lan_mesh remove-service <name>` / `lan_mesh list-services` | Manage advertised services |
-| `lan_mesh set-public-addr <ip> <port>` / `clear-public-addr` | Manual public-address override |
-| `lan_mesh cache-public-addr <on\|off>` | Persist the discovered address to `mesh.toml` |
-| `lan_mesh reset-public-addr` | Clear cached address, force a fresh self-STUN probe |
-| `lan_mesh warp-compat <on\|off>` | Toggle VPN/WARP-compatible interface pinning |
+| `meow-meow init` | Interactive first-time setup (creates `mesh.toml`) |
+| `meow-meow run` | Start the mesh (creates the virtual adapter) |
+| `meow-meow export` / `meow-meow import <card>` | Print / add a one-line peer card |
+| `meow-meow add-peer` / `meow-meow list-peers` | Manually add / review peers |
+| `meow-meow ping [N]` | Measure RTT to every peer over the mesh transport |
+| `meow-meow myaddr` | Discover your own external `ip:port` via STUN |
+| `meow-meow genkey` | Generate a fresh pre-shared key |
+| `meow-meow domains` | Show mesh domain names |
+| `meow-meow add-service <name> <port>` | Advertise a service as `<service>.<yourname>.mesh` |
+| `meow-meow remove-service <name>` / `meow-meow list-services` | Manage advertised services |
+| `meow-meow set-public-addr <ip> <port>` / `clear-public-addr` | Manual public-address override |
+| `meow-meow cache-public-addr <on\|off>` | Persist the discovered address to `mesh.toml` |
+| `meow-meow reset-public-addr` | Clear cached address, force a fresh self-STUN probe |
+| `meow-meow warp-compat <on\|off>` | Toggle VPN/WARP-compatible interface pinning |
 
 ## The GUI
 
-`lan_mesh_gui` is a native desktop app (egui/eframe — not a web view): a first-run setup
+`meow-meow_gui` is a native desktop app (egui/eframe — not a web view): a first-run setup
 wizard, network overview with live topology, peer list with latency/status, domains screen
 with the in-app browser, activity log, and settings (identity, key, peer cards, public-address
 discovery, and the sections below).
@@ -140,12 +140,12 @@ both configurable in `mesh.toml`:
   dropping new inbound connections *on the virtual adapter*, not a mesh bug. Fix once:
   `sudo ufw allow in on <mesh-device>` (check the name with `ip addr show`).
 - **Same-router peers** — two peers behind one router may never reach each other over their
-  shared public address (many consumer routers lack NAT hairpin). lan_mesh handles this
+  shared public address (many consumer routers lack NAT hairpin). meow-meow handles this
   automatically by gossiping LAN-facing addresses and probing them in parallel; whichever path
   answers wins, no configuration needed.
 - **Always-on VPNs (Cloudflare WARP, ...)** — the mesh pins its socket to a real, non-VPN
   interface (`warp_compat`, on by default). If self-STUN still never resolves on Windows with
-  no VPN active, try `lan_mesh warp-compat off` or set your public address manually.
+  no VPN active, try `meow-meow warp-compat off` or set your public address manually.
 - **NAT limitations** — symmetric NAT on *both* sides cannot be hole-punched (fundamental, not
   a bug); a relay would be required and is out of scope by design. IPv4 only. LAN broadcast is
   simulated at Layer 3, so games needing raw Ethernet frames are not supported.

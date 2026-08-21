@@ -2,12 +2,12 @@
 //! address plus any named subdomains (services) hosted under it, whether
 //! hosts-file sync / the built-in DNS resolver are enabled, a form for
 //! advertising your own services, and one-click shortcuts to open a name
-//! in the in-app browser (a separate `lan_mesh_browser` process -- see
+//! in the in-app browser (a separate `meow-meow_browser` process -- see
 //! that crate's Cargo.toml for why it isn't an embedded egui panel).
 
 use eframe::egui;
-use lan_mesh_core::config::Config;
-use lan_mesh_core::mesh::DomainNameEntry;
+use meow-meow_core::config::Config;
+use meow-meow_core::mesh::DomainNameEntry;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
@@ -107,8 +107,8 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
             for service in &cfg.services {
                 let hostname = format!(
                     "{}.{}.{}",
-                    lan_mesh_core::hosts::sanitize_label(&service.name),
-                    lan_mesh_core::hosts::sanitize_label(&cfg.me.name),
+                    meow-meow_core::hosts::sanitize_label(&service.name),
+                    meow-meow_core::hosts::sanitize_label(&cfg.me.name),
                     cfg.me.domain_suffix
                 );
                 ui.horizontal(|ui| {
@@ -232,20 +232,20 @@ fn collect_entries(app: &App, cfg: &Config) -> Vec<DomainNameEntry> {
         return handle.domain_snapshot();
     }
 
-    let infos = vec![lan_mesh_core::hosts::PeerDomainInfo {
+    let infos = vec![meow-meow_core::hosts::PeerDomainInfo {
         name: cfg.me.name.clone(),
         virtual_ip: cfg.me.virtual_ip,
         services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
     }]
     .into_iter()
-    .chain(cfg.peers.iter().map(|p| lan_mesh_core::hosts::PeerDomainInfo {
+    .chain(cfg.peers.iter().map(|p| meow-meow_core::hosts::PeerDomainInfo {
         name: p.name.clone(),
         virtual_ip: p.virtual_ip,
         services: Vec::new(),
     }))
     .collect::<Vec<_>>();
 
-    lan_mesh_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
+    meow-meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
         .into_iter()
         .map(|e| DomainNameEntry {
             hostname: e.hostname,
@@ -277,7 +277,7 @@ fn add_service(app: &mut App) {
                 if let Some(existing) = cfg.services.iter_mut().find(|s| s.name.eq_ignore_ascii_case(&name)) {
                     existing.port = port;
                 } else {
-                    cfg.services.push(lan_mesh_core::config::ServiceConfig { name: name.clone(), port });
+                    cfg.services.push(meow-meow_core::config::ServiceConfig { name: name.clone(), port });
                 }
                 app.save_and_sync_config(cfg);
                 app.show_toast(format!("Service '{name}' saved -- will announce once the mesh starts."));
@@ -304,7 +304,7 @@ fn remove_service(app: &mut App, name: &str) {
     app.show_toast(format!("Removed service '{name}'."));
 }
 
-/// Launches the standalone `мяу-мяу_browser` binary, expected to sit
+/// Launches the standalone `meow-meow_browser` binary, expected to sit
 /// next to this GUI executable (same directory, matching how the release
 /// packaging bundles it -- see `.github/workflows/release.yml`). An
 /// empty `target` opens the mesh home page instead of a specific
@@ -312,7 +312,7 @@ fn remove_service(app: &mut App, name: &str) {
 fn launch_browser(app: &mut App, target: &str) {
     let exe = std::env::current_exe().ok();
     let dir = exe.as_ref().and_then(|p| p.parent());
-    let browser_name = if cfg!(windows) { "мяу-мяу_browser.exe" } else { "мяу-мяу_browser" };
+    let browser_name = if cfg!(windows) { "meow-meow_browser.exe" } else { "meow-meow_browser" };
     let browser_path = dir.map(|d| d.join(browser_name));
 
     let mut cmd = match &browser_path {

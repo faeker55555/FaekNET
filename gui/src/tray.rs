@@ -44,7 +44,7 @@ pub fn build() -> Option<Tray> {
     let icon = Icon::from_rgba(include_bytes!("../assets/tray_icon.rgba").to_vec(), 32, 32).ok()?;
 
     let menu = Menu::new();
-    let show_item = MenuItem::new("Открыть мяу-мяу", true, None);
+    let show_item = MenuItem::new("Открыть meow-meow", true, None);
     let quit_item = MenuItem::new("Выйти", true, None);
     if menu.append(&show_item).is_err() {
         return None;
@@ -79,7 +79,7 @@ pub fn build() -> Option<Tray> {
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_tooltip("мяу-мяу")
+        .with_tooltip("meow-meow")
         .with_icon(icon)
         .build()
         .ok()?;

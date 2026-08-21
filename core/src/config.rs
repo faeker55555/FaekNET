@@ -110,7 +110,7 @@ pub struct MeConfig {
     /// persisted here when `cache_public_addr` is enabled. Not meant to
     /// be hand-edited -- use `manual_public_ip`/`manual_public_port`
     /// instead if you want to force a specific value; use the "reset
-    /// public address" action (CLI: `lan_mesh reset-public-addr`, GUI:
+    /// public address" action (CLI: `meow-meow reset-public-addr`, GUI:
     /// Settings screen) to clear it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_public_ip: Option<String>,

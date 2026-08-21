@@ -1,6 +1,6 @@
 use eframe::egui;
-use lan_mesh_core::config::Config;
-use lan_mesh_core::stun;
+use meow-meow_core::config::Config;
+use meow-meow_core::stun;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
@@ -22,7 +22,7 @@ pub fn generate_my_card(app: &mut App, cfg: &Config) {
 
     match addr {
         Some(addr) => {
-            let card = lan_mesh_core::share::encode(
+            let card = meow-meow_core::share::encode(
                 &cfg.me.name,
                 cfg.me.virtual_ip,
                 &addr.ip().to_string(),
@@ -296,7 +296,7 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "START ON LOGIN", |ui| {
         ui.label(
             egui::RichText::new(
-                "Launch lan_mesh when you log in, starting minimized in the system tray so the \
+                "Launch meow-meow when you log in, starting minimized in the system tray so the \
                  mesh is up immediately without a window popping up. Uses the XDG autostart \
                  entry on Linux and the Run registry key on Windows.",
             )
@@ -306,7 +306,7 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         let mut enabled = crate::autostart::is_enabled();
         if ui
-            .checkbox(&mut enabled, "Start lan_mesh automatically on system startup")
+            .checkbox(&mut enabled, "Start meow-meow automatically on system startup")
             .changed()
         {
             let res = if enabled {
@@ -316,7 +316,7 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
             };
             match res {
                 Ok(()) => app.show_toast(if enabled {
-                    "Autostart enabled -- lan_mesh will start with your session."
+                    "Autostart enabled -- meow-meow will start with your session."
                 } else {
                     "Autostart disabled."
                 }),
@@ -362,7 +362,7 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
         kv_row(ui, "CURRENT VERSION", crate::updater::current_version());
         let mut chk = app.gui_settings.check_updates_on_start;
         if ui
-            .checkbox(&mut chk, "Check for updates when lan_mesh starts")
+            .checkbox(&mut chk, "Check for updates when meow-meow starts")
             .changed()
         {
             app.gui_settings.check_updates_on_start = chk;

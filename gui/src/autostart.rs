@@ -1,9 +1,9 @@
-// "Start lan_mesh with the session" support, per platform:
+// "Start meow-meow with the session" support, per platform:
 //
 // - Linux: an XDG autostart `.desktop` entry in
 //   `$XDG_CONFIG_HOME/autostart` (or `~/.config/autostart`), which all
 //   mainstream desktops (GNOME, KDE, XFCE, ...) honor at login.
-// - Windows: the `мяу-мяу_gui` value under
+// - Windows: the `meow-meow_gui` value under
 //   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, managed via
 //   the system `reg.exe` (no admin rights needed for HKCU, and no extra
 //   dependencies in the app itself).
@@ -45,7 +45,7 @@ mod platform {
     }
 
     pub fn desktop_file() -> Option<PathBuf> {
-        autostart_dir().map(|d| d.join("мяу-мяу-gui.desktop"))
+        autostart_dir().map(|d| d.join("meow-meow-gui.desktop"))
     }
 
     pub fn is_enabled() -> bool {
@@ -68,8 +68,8 @@ mod platform {
         let content = format!(
             "[Desktop Entry]\n\
              Type=Application\n\
-             Name=мяу-мяу\n\
-             Comment=мяу-мяу virtual LAN\n\
+             Name=meow-meow\n\
+             Comment=meow-meow virtual LAN\n\
              Exec=\"{exe_escaped}\" --minimized\n\
              Terminal=false\n\
              X-GNOME-Autostart-enabled=true\n"
@@ -97,7 +97,7 @@ mod platform {
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    const VALUE: &str = "мяу-мяу_gui";
+    const VALUE: &str = "meow-meow_gui";
 
     fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
         Command::new("reg")

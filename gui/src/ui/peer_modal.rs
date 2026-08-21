@@ -96,7 +96,7 @@ fn import_card(app: &mut App) {
     let Some(cfg) = app.current_config() else {
         return;
     };
-    match lan_mesh_core::share::decode(&card) {
+    match meow-meow_core::share::decode(&card) {
         Ok(peer) => {
             if peer.virtual_ip == cfg.me.virtual_ip {
                 app.add_peer_modal.error = Some("That's your own card.".to_string());

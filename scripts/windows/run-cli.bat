@@ -1,5 +1,5 @@
 @echo off
-REM Runs the lan_mesh CLI. Passes through all arguments, e.g.:
+REM Runs the meow-meow CLI. Passes through all arguments, e.g.:
 REM   run-cli.bat init
 REM   run-cli.bat export
 REM   run-cli.bat run
@@ -15,11 +15,11 @@ cd /d "%~dp0"
 if /I "%~1"=="run" (
     net session >nul 2>&1
     if %errorlevel% neq 0 (
-        echo lan_mesh run needs Administrator privileges to create its virtual network adapter.
+        echo meow-meow run needs Administrator privileges to create its virtual network adapter.
         echo Requesting elevation...
-        powershell -NoProfile -Command "Start-Process -FilePath '%~dp0lan_mesh.exe' -ArgumentList 'run' -Verb RunAs -Wait"
+        powershell -NoProfile -Command "Start-Process -FilePath '%~dp0meow-meow.exe' -ArgumentList 'run' -Verb RunAs -Wait"
         exit /b 0
     )
 )
 
-"%~dp0lan_mesh.exe" %*
+"%~dp0meow-meow.exe" %*

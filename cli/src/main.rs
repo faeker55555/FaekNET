@@ -1,4 +1,4 @@
-use lan_mesh_core::{config, crypto, hosts, mesh, share, stun};
+use meow-meow_core::{config, crypto, hosts, mesh, share, stun};
 
 use config::{Config, MeConfig, PeerConfig};
 use std::io::{self, BufRead, Write};
@@ -24,68 +24,68 @@ fn prompt_with_default(msg: &str, default: &str) -> String {
 
 fn print_usage() {
     println!(
-        "lan_mesh -- pure P2P virtual LAN for games, no third-party VPN service
+        "meow-meow -- pure P2P virtual LAN for games, no third-party VPN service
 
 Usage:
-  lan_mesh init            Interactive first-time setup (creates mesh.toml)
-  lan_mesh add-peer        Interactively add a peer to mesh.toml
-  lan_mesh export          Print a one-line peer card to send to a friend
-                           (they run `lan_mesh import <the line>`)
-  lan_mesh import <card>   Add a peer from a card produced by their `export`
-  lan_mesh list-peers      Show configured peers and their reachability
-  lan_mesh myaddr          Discover your own external ip:port via STUN
+  meow-meow init            Interactive first-time setup (creates mesh.toml)
+  meow-meow add-peer        Interactively add a peer to mesh.toml
+  meow-meow export          Print a one-line peer card to send to a friend
+                           (they run `meow-meow import <the line>`)
+  meow-meow import <card>   Add a peer from a card produced by their `export`
+  meow-meow list-peers      Show configured peers and their reachability
+  meow-meow myaddr          Discover your own external ip:port via STUN
                            (only needed if NOT using export/import)
-  lan_mesh ping [N]        Measure round-trip latency to every peer over
+  meow-meow ping [N]        Measure round-trip latency to every peer over
                            the mesh transport (N probes, default 5). Does
                            NOT need root/Administrator.
-  lan_mesh run             Start the mesh (creates the virtual adapter,
+  meow-meow run             Start the mesh (creates the virtual adapter,
                            needs root/Administrator)
-  lan_mesh genkey          Generate a fresh pre-shared key to share with
+  meow-meow genkey          Generate a fresh pre-shared key to share with
                            everyone in your mesh
-  lan_mesh domains         Show the local mesh domain name (<name>.<suffix>)
+  meow-meow domains         Show the local mesh domain name (<name>.<suffix>)
                            for yourself and every configured peer
-  lan_mesh add-service <name> <port>
+  meow-meow add-service <name> <port>
                            Advertise a named service you host (e.g. a game
                            server) as a subdomain of your own mesh name --
                            reachable as <service>.<yourname>.<suffix> once
                            the mesh is running, gossiped automatically to
                            everyone else
-  lan_mesh remove-service <name>
+  meow-meow remove-service <name>
                            Stop advertising a service
-  lan_mesh list-services   Show services you've configured
-  lan_mesh set-public-addr <ip> <port>
+  meow-meow list-services   Show services you've configured
+  meow-meow set-public-addr <ip> <port>
                            Manually set your own public ip:port, bypassing
                            self-STUN discovery entirely -- for networks
                            where STUN is blocked/unreliable, or when you
                            already know the address (e.g. a server with a
                            static IP + port-forwarded router)
-  lan_mesh clear-public-addr
+  meow-meow clear-public-addr
                            Remove a manual override, reverting to
                            automatic self-STUN discovery
-  lan_mesh reset-public-addr
+  meow-meow reset-public-addr
                            Clear a cached public address (see
                            `cache-public-addr` below), forcing a fresh
                            self-STUN probe next run
-  lan_mesh warp-compat <on|off>
+  meow-meow warp-compat <on|off>
                            Toggle interface-pinning used to work around
                            always-on VPN/WARP clients rerouting the
                            mesh's own traffic. Leave ON unless self-STUN
                            still won't resolve on Windows even with no
                            VPN active, in which case try turning it OFF
-  lan_mesh cache-public-addr <on|off>
+  meow-meow cache-public-addr <on|off>
                            When ON, your discovered public address is
                            saved to mesh.toml so future launches have an
                            immediately usable value without waiting on
                            STUN to succeed again
 
 Quickest way to connect with a friend:
-  1. Both run `lan_mesh init` (one of you leaves the PSK prompt empty to
+  1. Both run `meow-meow init` (one of you leaves the PSK prompt empty to
      generate a new key, and sends that exact key to the other over chat/
      voice -- do this once per group, never post it publicly).
-  2. Both run `lan_mesh export`, and send each other the single printed
+  2. Both run `meow-meow export`, and send each other the single printed
      line.
-  3. Both run `lan_mesh import <the line your friend sent you>`.
-  4. Both run `lan_mesh run`.
+  3. Both run `meow-meow import <the line your friend sent you>`.
+  4. Both run `meow-meow run`.
 "
     );
 }
@@ -102,7 +102,7 @@ fn cmd_init() {
         }
     }
 
-    println!("=== lan_mesh setup ===");
+    println!("=== meow-meow setup ===");
     println!(
         "Everyone in your mesh must use the SAME virtual subnet and the SAME\n\
          pre-shared key, but a DIFFERENT virtual IP within that subnet.\n"
@@ -175,15 +175,15 @@ fn cmd_init() {
     };
     cfg.save().expect("failed to write mesh.toml");
     println!("\nSaved {}.", config::CONFIG_PATH);
-    println!("Next: run `lan_mesh export`, send the printed line to a friend, and have them");
-    println!("run `lan_mesh import <that line>` (and vice versa) to connect.");
+    println!("Next: run `meow-meow export`, send the printed line to a friend, and have them");
+    println!("run `meow-meow import <that line>` (and vice versa) to connect.");
 }
 
 fn cmd_add_peer() {
     let mut cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -201,8 +201,8 @@ fn cmd_add_peer() {
         eprintln!("That's your own virtual IP -- peers need distinct addresses. Aborting.");
         return;
     }
-    let public_ip = prompt("Peer's public IP (what they got from `lan_mesh myaddr`): ");
-    let public_port_str = prompt("Peer's public port (from `lan_mesh myaddr`): ");
+    let public_ip = prompt("Peer's public IP (what they got from `meow-meow myaddr`): ");
+    let public_port_str = prompt("Peer's public port (from `meow-meow myaddr`): ");
     let public_port: u16 = match public_port_str.parse() {
         Ok(p) => p,
         Err(_) => {
@@ -218,14 +218,14 @@ fn cmd_add_peer() {
         public_port,
     });
     cfg.save().expect("failed to write mesh.toml");
-    println!("Peer added. Run `lan_mesh list-peers` to review, `lan_mesh run` to start the mesh.");
+    println!("Peer added. Run `meow-meow list-peers` to review, `meow-meow run` to start the mesh.");
 }
 
 fn cmd_export() {
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -236,12 +236,12 @@ fn cmd_export() {
     let Some(addr) = stun::discover_external_addr_any(cfg.me.listen_port) else {
         eprintln!(
             "Could not reach any STUN server -- check your internet connection, \
-or run `lan_mesh myaddr` for more detail."
+or run `meow-meow myaddr` for more detail."
         );
         return;
     };
     let card = share::encode(&cfg.me.name, cfg.me.virtual_ip, &addr.ip().to_string(), addr.port());
-    println!("\nSend this exact line to your friend (they run `lan_mesh import <line>`):\n");
+    println!("\nSend this exact line to your friend (they run `meow-meow import <line>`):\n");
     println!("{card}\n");
     println!(
         "(Reminder: they also need your shared pre-shared key, sent separately, \
@@ -253,7 +253,7 @@ fn cmd_import(card: &str) {
     let mut cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -276,14 +276,14 @@ fn cmd_import(card: &str) {
         cfg.peers.push(peer);
     }
     cfg.save().expect("failed to write mesh.toml");
-    println!("Run `lan_mesh list-peers` to review, `lan_mesh run` to start the mesh.");
+    println!("Run `meow-meow list-peers` to review, `meow-meow run` to start the mesh.");
 }
 
 fn cmd_ping(count: u32) {
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -303,7 +303,7 @@ fn cmd_list_peers() {
     println!("Your virtual IP: {}/{}", cfg.me.virtual_ip, cfg.me.prefix);
     println!("Broadcast address: {}", cfg.broadcast_addr());
     if cfg.peers.is_empty() {
-        println!("No peers configured yet. Use `lan_mesh add-peer`.");
+        println!("No peers configured yet. Use `meow-meow add-peer`.");
         return;
     }
     for p in &cfg.peers {
@@ -318,7 +318,7 @@ fn cmd_myaddr() {
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -365,7 +365,7 @@ fn cmd_domains() {
     let cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -397,14 +397,14 @@ fn cmd_domains() {
     if !cfg.services.is_empty() {
         println!(
             "(Peers' own advertised services aren't shown here -- they're only known once \
-the mesh is running and gossip has delivered them. Run `lan_mesh run` and check the \
+the mesh is running and gossip has delivered them. Run `meow-meow run` and check the \
 GUI's Domains screen, or the activity log, for the live picture.)\n"
         );
     }
     if cfg.me.sync_hosts_file {
         println!(
             "Hosts-file sync is ENABLED -- these names already work in any app on this \
-             machine while `lan_mesh run` is active (managed block in {}).",
+             machine while `meow-meow run` is active (managed block in {}).",
             hosts::hosts_file_path().display()
         );
     } else {
@@ -427,7 +427,7 @@ fn cmd_add_service(name: &str, port_str: &str) {
     let mut cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -467,7 +467,7 @@ fn cmd_remove_service(name: &str) {
     let mut cfg = match Config::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -490,7 +490,7 @@ fn cmd_list_services() {
         }
     };
     if cfg.services.is_empty() {
-        println!("No services configured. Use `lan_mesh add-service <name> <port>`.");
+        println!("No services configured. Use `meow-meow add-service <name> <port>`.");
         return;
     }
     for s in &cfg.services {
@@ -510,7 +510,7 @@ fn cmd_run() {
         Ok(c) => c,
 
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             return;
         }
     };
@@ -524,7 +524,7 @@ fn load_or_die() -> Option<Config> {
     match Config::load() {
         Ok(c) => Some(c),
         Err(e) => {
-            eprintln!("Could not load {}: {e}. Run `lan_mesh init` first.", config::CONFIG_PATH);
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
             None
         }
     }
@@ -551,7 +551,7 @@ fn cmd_set_public_addr(ip_str: &str, port_str: &str) {
     cfg.save().expect("failed to write mesh.toml");
     println!(
         "Manual public address set to {ip}:{port} -- self-STUN discovery is now disabled. \
-Run `lan_mesh clear-public-addr` to go back to automatic discovery."
+Run `meow-meow clear-public-addr` to go back to automatic discovery."
     );
 }
 
@@ -599,7 +599,7 @@ whatever route the OS picks normally, like any other application -- use this if 
 still won't resolve on Windows even without a VPN/WARP active."
             );
         }
-        other => eprintln!("Usage: lan_mesh warp-compat <on|off> (got '{other}')"),
+        other => eprintln!("Usage: meow-meow warp-compat <on|off> (got '{other}')"),
     }
 }
 
@@ -617,9 +617,9 @@ mesh.toml so future launches have an immediately usable address without waiting 
         "off" | "false" | "disable" => {
             cfg.me.cache_public_addr = false;
             cfg.save().expect("failed to write mesh.toml");
-            println!("Public address caching DISABLED. (Any already-cached value is left in place; use `lan_mesh reset-public-addr` to clear it.)");
+            println!("Public address caching DISABLED. (Any already-cached value is left in place; use `meow-meow reset-public-addr` to clear it.)");
         }
-        other => eprintln!("Usage: lan_mesh cache-public-addr <on|off> (got '{other}')"),
+        other => eprintln!("Usage: meow-meow cache-public-addr <on|off> (got '{other}')"),
     }
 }
 
@@ -631,7 +631,7 @@ fn main() {
         Some("export") => cmd_export(),
         Some("import") => match args.get(2) {
             Some(card) => cmd_import(card),
-            None => eprintln!("Usage: lan_mesh import <card>"),
+            None => eprintln!("Usage: meow-meow import <card>"),
         },
         Some("list-peers") => cmd_list_peers(),
         Some("myaddr") => cmd_myaddr(),
@@ -643,26 +643,26 @@ fn main() {
         Some("domains") => cmd_domains(),
         Some("add-service") => match (args.get(2), args.get(3)) {
             (Some(name), Some(port)) => cmd_add_service(name, port),
-            _ => eprintln!("Usage: lan_mesh add-service <name> <port>"),
+            _ => eprintln!("Usage: meow-meow add-service <name> <port>"),
         },
         Some("remove-service") => match args.get(2) {
             Some(name) => cmd_remove_service(name),
-            None => eprintln!("Usage: lan_mesh remove-service <name>"),
+            None => eprintln!("Usage: meow-meow remove-service <name>"),
         },
         Some("list-services") => cmd_list_services(),
         Some("set-public-addr") => match (args.get(2), args.get(3)) {
             (Some(ip), Some(port)) => cmd_set_public_addr(ip, port),
-            _ => eprintln!("Usage: lan_mesh set-public-addr <ip> <port>"),
+            _ => eprintln!("Usage: meow-meow set-public-addr <ip> <port>"),
         },
         Some("clear-public-addr") => cmd_clear_public_addr(),
         Some("reset-public-addr") => cmd_reset_public_addr(),
         Some("warp-compat") => match args.get(2) {
             Some(arg) => cmd_warp_compat(arg),
-            None => eprintln!("Usage: lan_mesh warp-compat <on|off>"),
+            None => eprintln!("Usage: meow-meow warp-compat <on|off>"),
         },
         Some("cache-public-addr") => match args.get(2) {
             Some(arg) => cmd_cache_public_addr(arg),
-            None => eprintln!("Usage: lan_mesh cache-public-addr <on|off>"),
+            None => eprintln!("Usage: meow-meow cache-public-addr <on|off>"),
         },
         Some("run") => cmd_run(),
         _ => print_usage(),

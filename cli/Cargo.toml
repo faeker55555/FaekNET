@@ -1,11 +1,11 @@
 [package]
-name = "lan_mesh_cli"
+name = "meow-meow_cli"
 version = "0.31.0"
 edition = "2021"
 
 [[bin]]
-name = "мяу-мяу"
+name = "meow-meow"
 path = "src/main.rs"
 
 [dependencies]
-lan_mesh_core = { path = "../core" }
+meow-meow_core = { path = "../core" }

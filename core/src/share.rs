@@ -23,7 +23,7 @@ pub fn decode(token: &str) -> Result<PeerConfig, String> {
     let token = token.trim();
     let payload = token
         .strip_prefix(PREFIX)
-        .ok_or_else(|| format!("Not a valid lan_mesh peer card (expected it to start with '{PREFIX}')"))?;
+        .ok_or_else(|| format!("Not a valid meow-meow peer card (expected it to start with '{PREFIX}')"))?;
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .map_err(|e| format!("Could not decode peer card: {e}"))?;

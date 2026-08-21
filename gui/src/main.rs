@@ -17,7 +17,7 @@ use app_state::App;
 use eframe::egui;
 
 /// mesh.toml lives in the process working directory (portable layout).
-/// When lan_mesh is launched from elsewhere -- e.g. an autostart entry
+/// When meow-meow is launched from elsewhere -- e.g. an autostart entry
 /// that runs the binary by absolute path -- fall back to the executable's
 /// own directory so the existing mesh.toml is still found.
 fn ensure_config_cwd() {
@@ -45,12 +45,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([980.0, 640.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_title("мяу-мяу"),
+            .with_title("meow-meow"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "мяу-мяу",
+        "meow-meow",
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);

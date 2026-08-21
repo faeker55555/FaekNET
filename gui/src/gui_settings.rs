@@ -1,6 +1,6 @@
 // GUI-only preferences, persisted to `gui.toml` next to `mesh.toml`
 // (i.e. in the directory the GUI is launched from -- the same portable
-// layout the rest of lan_mesh uses).
+// layout the rest of meow-meow uses).
 //
 // Deliberately a *separate* file rather than a section inside mesh.toml:
 // the mesh engine rewrites mesh.toml wholesale whenever it persists a

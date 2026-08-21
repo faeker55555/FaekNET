@@ -515,10 +515,10 @@ fn extract(archive: &Path, dest_dir: &Path) -> Result<(), String> {
         if out.status.success() {
             return Ok(());
         }
-        return Err(format!(
+        Err(format!(
             "could not extract {} (tried tar, powershell)",
             archive.display()
-        ));
+        ))
     }
 
     #[cfg(not(target_os = "windows"))]

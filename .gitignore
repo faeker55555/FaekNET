@@ -1,18 +1,9 @@
-/target
 /target/
 /dist
 .cargo/config.toml
 mesh.toml
 *.pdb
-
-# messenger runtime data (generated at run time, not part of the source)
-extras/messenger_history.jsonl
-extras/messenger_uploads/
-extras/messenger_certs/
-extras/messenger_accounts.json
-extras/__pycache__/
+*.exe
 
 # GUI preferences (created at runtime)
 gui.toml
-# Windows build artifacts
-*.exe

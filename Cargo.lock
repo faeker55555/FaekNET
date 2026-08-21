@@ -2222,6 +2222,7 @@ version = "0.31.0"
 dependencies = [
  "eframe",
  "egui",
+ "gtk",
  "lan_mesh_core",
  "serde",
  "serde_json",

@@ -293,6 +293,181 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
 
     ui.add_space(14.0);
 
+    section(ui, "START ON LOGIN", |ui| {
+        ui.label(
+            egui::RichText::new(
+                "Launch lan_mesh when you log in, starting minimized in the system tray so the \
+                 mesh is up immediately without a window popping up. Uses the XDG autostart \
+                 entry on Linux and the Run registry key on Windows.",
+            )
+            .color(theme::TEXT_DIM)
+            .size(11.0),
+        );
+        ui.add_space(6.0);
+        let mut enabled = crate::autostart::is_enabled();
+        if ui
+            .checkbox(&mut enabled, "Start lan_mesh automatically on system startup")
+            .changed()
+        {
+            let res = if enabled {
+                crate::autostart::enable()
+            } else {
+                crate::autostart::disable()
+            };
+            match res {
+                Ok(()) => app.show_toast(if enabled {
+                    "Autostart enabled -- lan_mesh will start with your session."
+                } else {
+                    "Autostart disabled."
+                }),
+                Err(e) => app.show_toast(format!("Autostart failed: {e}")),
+            }
+        }
+    });
+
+    ui.add_space(14.0);
+
+    section(ui, "SYSTEM TRAY", |ui| {
+        ui.label(
+            egui::RichText::new(
+                "Closing or minimizing the window keeps the mesh running in the tray. \
+                 Use the tray's Quit item (or the checkbox below, off) to exit for real.",
+            )
+            .color(theme::TEXT_DIM)
+            .size(11.0),
+        );
+        ui.add_space(6.0);
+        let mut close_to_tray = app.gui_settings.close_to_tray;
+        if ui
+            .checkbox(&mut close_to_tray, "Minimize / close to tray instead of quitting")
+            .changed()
+        {
+            app.gui_settings.close_to_tray = close_to_tray;
+            app.gui_settings.save();
+        }
+        kv_row(
+            ui,
+            "TRAY ICON",
+            if app.tray.is_some() {
+                "active"
+            } else {
+                "unavailable on this system"
+            },
+        );
+    });
+
+    ui.add_space(14.0);
+
+    section(ui, "UPDATES", |ui| {
+        kv_row(ui, "CURRENT VERSION", crate::updater::current_version());
+        let mut chk = app.gui_settings.check_updates_on_start;
+        if ui
+            .checkbox(&mut chk, "Check for updates when lan_mesh starts")
+            .changed()
+        {
+            app.gui_settings.check_updates_on_start = chk;
+            app.gui_settings.save();
+        }
+
+        ui.add_space(8.0);
+        let status = app.updater.lock().unwrap().status.clone();
+        let busy = matches!(
+            &status,
+            crate::updater::UpdateStatus::Checking
+                | crate::updater::UpdateStatus::Downloading { .. }
+                | crate::updater::UpdateStatus::Verifying
+                | crate::updater::UpdateStatus::Extracting
+                | crate::updater::UpdateStatus::Applying
+        );
+        if ui
+            .add_enabled(!busy, egui::Button::new("CHECK FOR UPDATES"))
+            .clicked()
+        {
+            crate::updater::start_check(app.updater.clone());
+        }
+        ui.add_space(6.0);
+
+        match &status {
+            crate::updater::UpdateStatus::Idle => {
+                ui.colored_label(theme::TEXT_DIM, "No update check run yet.");
+            }
+            crate::updater::UpdateStatus::Checking => {
+                ui.colored_label(theme::TEXT_NORMAL, "Checking for updates...");
+            }
+            crate::updater::UpdateStatus::UpToDate { version } => {
+                ui.colored_label(theme::TEAL, format!("Up to date (latest release: {version})."));
+            }
+            crate::updater::UpdateStatus::Available { version } => {
+                ui.colored_label(theme::AMBER, format!("Version {version} is available."));
+                if let Some(info) = &app.updater.lock().unwrap().info {
+                    if !info.notes.trim().is_empty() {
+                        ui.add_space(6.0);
+                        egui::Frame::new()
+                            .fill(theme::BG_INPUT)
+                            .inner_margin(egui::Margin::same(8))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&info.notes)
+                                            .color(theme::TEXT_NORMAL)
+                                            .size(11.0),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button("DOWNLOAD & INSTALL").clicked() {
+                    if let Some(info) = app.updater.lock().unwrap().info.clone() {
+                        crate::updater::start_install(
+                            app.updater.clone(),
+                            info,
+                            app.updater_quit.clone(),
+                        );
+                    }
+                }
+            }
+            crate::updater::UpdateStatus::NoRelease => {
+                ui.colored_label(
+                    theme::TEXT_DIM,
+                    "No newer release with a package for this platform.",
+                );
+            }
+            crate::updater::UpdateStatus::Downloading { bytes, total } => {
+                let (bytes, total) = (*bytes, *total);
+                let pct = if total > 0 {
+                    (bytes as f32 / total as f32).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                ui.add(egui::ProgressBar::new(pct).show_percentage());
+                ui.colored_label(
+                    theme::TEXT_NORMAL,
+                    format!(
+                        "Downloading... {:.1} / {:.1} MB",
+                        bytes as f64 / 1_000_000.0,
+                        total as f64 / 1_000_000.0
+                    ),
+                );
+            }
+            crate::updater::UpdateStatus::Verifying => {
+                ui.colored_label(theme::TEXT_NORMAL, "Verifying checksum...");
+            }
+            crate::updater::UpdateStatus::Extracting => {
+                ui.colored_label(theme::TEXT_NORMAL, "Extracting update...");
+            }
+            crate::updater::UpdateStatus::Applying => {
+                ui.colored_label(theme::TEAL, "Applying update -- restarting...");
+            }
+            crate::updater::UpdateStatus::Failed(e) => {
+                ui.colored_label(theme::RED, format!("Update failed: {e}"));
+            }
+        }
+    });
+
+    ui.add_space(14.0);
+
     section(ui, "ABOUT", |ui| {
         kv_row(ui, "CONFIG FILE", "mesh.toml (current directory)");
         kv_row(ui, "TRANSPORT", "UDP, ChaCha20-Poly1305 encrypted");

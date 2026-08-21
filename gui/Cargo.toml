@@ -1,12 +1,21 @@
 [package]
 name = "lan_mesh_gui"
-version = "0.1.0"
+version = "0.31.0"
 edition = "2021"
 
 [dependencies]
 lan_mesh_core = { path = "../core" }
 eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow", "persistence", "x11", "wayland", "__screenshot"] }
 egui = "0.31"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+# System tray icon (Linux + Windows). `libxdo` default feature disabled:
+# only needed for muda's predefined Copy/Cut/Paste menu items, which we
+# don't use. On Linux this builds against the gtk-3 dev headers (already
+# required by the browser crate) and dlopens libappindicator at runtime,
+# so no extra system packages are needed at build time.
+tray-icon = { version = "0.21.3", default-features = false }
 
 [[bin]]
 name = "lan_mesh_gui"

@@ -363,6 +363,48 @@ match: set up with the CLI, monitor with the GUI, or vice versa.
 A sixth screen, **Domains**, lists every peer's local domain name and
 launches the in-app browser — see the next two sections.
 
+## Desktop integration: tray, autostart, self-update
+
+The GUI behaves like a long-running tray app on both Linux and Windows:
+
+- **System tray** — closing *or* minimizing the window hides it to the
+  system tray instead of quitting, and the mesh keeps running. Restore
+  the window with a left click on the tray icon or its "Open lan_mesh"
+  menu item; exit for real with the tray's "Quit" item. Settings has a
+  "Minimize/close to tray instead of quitting" checkbox to turn this
+  behavior off (the tray icon itself stays while the app runs). On
+  Linux the icon goes through libappindicator / ayatana-appindicator,
+  whichever the desktop provides; under Wayland, hiding a window isn't
+  supported by the compositor protocol, so minimize-to-tray degrades to
+  a normal minimize there.
+- **Start on login** — the Settings screen's "Start on system startup"
+  checkbox writes an XDG autostart entry on Linux
+  (`~/.config/autostart/lan-mesh-gui.desktop`, or
+  `$XDG_CONFIG_HOME/autostart`) and a
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value on Windows.
+  Both launch the GUI with `--minimized`, so the mesh comes up quietly
+  in the tray at login. Because `mesh.toml` lives in the working
+  directory, the GUI additionally falls back to the executable's own
+  directory when it's launched from somewhere else (e.g. by that
+  autostart entry), so a portable install next to its `mesh.toml` keeps
+  working.
+- **Self-update** — Settings → Updates checks the GitHub Releases page
+  for a newer build, shows the release notes, and with one click
+  downloads the platform package, verifies its `.sha256` (when the
+  release provides one), extracts it, and swaps the binaries through a
+  small detached script that waits for the app to exit and relaunches
+  the new GUI. Nothing is touched until the download is fully verified,
+  the app never offers a downgrade, and a failed checksum aborts the
+  install leaving the running copy untouched.
+
+**Version discipline for the updater:** it compares the latest release
+tag against the crate versions in `Cargo.toml`
+(`env!("CARGO_PKG_VERSION")`) numerically, so keep them in sync — e.g.
+tag `v0.31.0` for version `0.31.0`. Both the CI asset naming
+(`lan_mesh-<tag>-linux-x86_64.tar.gz` / `...-windows-x86_64.zip` plus
+their `.sha256` files) and the older hand-made `LINUX.zip` /
+`WINDOWS.zip` naming are accepted.
+
 ## Local domain names
 
 Every peer is reachable by name, not just by its raw virtual IP: with the
@@ -505,8 +547,10 @@ This repo includes a GitHub Actions workflow
   scripts + `extras/`), and publishes them as a GitHub Release with
   checksums.
 
-To cut a release: `git tag v0.2.0 && git push --tags`. That's it — the
+To cut a release: `git tag v0.31.0 && git push --tags`. That's it — the
 workflow does the rest and the Release page gets populated automatically.
+Keep the tag in sync with the `Cargo.toml` versions (see "Desktop
+integration" above — the GUI's self-updater compares them).
 
 ### Building locally (without CI)
 

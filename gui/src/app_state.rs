@@ -1,8 +1,12 @@
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use lan_mesh_core::config::Config;
 use lan_mesh_core::mesh::{self, MeshHandle, MeshSnapshot};
+
+use crate::gui_settings::GuiSettings;
+use crate::{tray, updater};
 
 pub const MAX_LOG_LINES: usize = 500;
 
@@ -153,10 +157,32 @@ pub struct App {
     pub manual_addr_form: ManualAddrForm,
     pub last_refresh: std::time::Instant,
     pub toast: Option<(String, std::time::Instant)>,
+    /// GUI-only preferences (tray behavior, update checks), persisted to
+    /// gui.toml next to mesh.toml.
+    pub gui_settings: GuiSettings,
+    /// System tray icon, when the platform/desktop provides one. Keeping
+    /// it alive for the whole run is what keeps the icon visible.
+    pub tray: Option<tray::Tray>,
+    /// Shared self-updater state, written by updater worker threads and
+    /// rendered by the Settings screen.
+    pub updater: Arc<Mutex<updater::UpdaterState>>,
+    /// Set by the updater once the swap script is running -- the main
+    /// loop reacts by closing the window for real so the script can
+    /// replace the binaries and relaunch.
+    pub updater_quit: Arc<AtomicBool>,
+    /// True when the app is about to exit for real (tray "Quit" or a
+    /// finished update) -- suppresses the close-to-tray interception.
+    pub pending_quit: bool,
+    /// Launched with `--minimized` (autostart): start hidden in the
+    /// tray instead of popping a window.
+    pub start_hidden: bool,
+    pub hide_done: bool,
+    pub update_check_started: bool,
+    pub updater_toast_shown: bool,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(start_hidden: bool) -> Self {
         let logs = new_log_buffer();
         install_log_sink(logs.clone());
 
@@ -186,6 +212,15 @@ impl App {
             manual_addr_form: ManualAddrForm::default(),
             last_refresh: std::time::Instant::now(),
             toast: None,
+            gui_settings: GuiSettings::load(),
+            tray: tray::build(),
+            updater: updater::shared(),
+            updater_quit: Arc::new(AtomicBool::new(false)),
+            pending_quit: false,
+            start_hidden,
+            hide_done: false,
+            update_check_started: false,
+            updater_toast_shown: false,
         }
     }
 

@@ -2182,11 +2182,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "meow_meow_browser"
+name = "meow-meow_browser"
 version = "0.31.0"
 dependencies = [
  "gtk",
- "meow_meow_core",
+ "meow-meow_core",
  "serde",
  "serde_json",
  "tao",
@@ -2194,14 +2194,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "meow_meow_cli"
+name = "meow-meow_cli"
 version = "0.31.0"
 dependencies = [
- "meow_meow_core",
+ "meow-meow_core",
 ]
 
 [[package]]
-name = "meow_meow_core"
+name = "meow-meow_core"
 version = "0.31.0"
 dependencies = [
  "base64 0.22.1",
@@ -2217,13 +2217,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "meow_meow_gui"
+name = "meow-meow_gui"
 version = "0.31.0"
 dependencies = [
  "eframe",
  "egui",
  "gtk",
- "meow_meow_core",
+ "meow-meow_core",
  "serde",
  "serde_json",
  "toml",

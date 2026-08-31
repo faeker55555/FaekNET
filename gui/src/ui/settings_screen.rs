@@ -1,6 +1,6 @@
 use eframe::egui;
-use meow-meow_core::config::Config;
-use meow-meow_core::stun;
+use meow_meow_core::config::Config;
+use meow_meow_core::stun;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
@@ -22,7 +22,7 @@ pub fn generate_my_card(app: &mut App, cfg: &Config) {
 
     match addr {
         Some(addr) => {
-            let card = meow-meow_core::share::encode(
+            let card = meow_meow_core::share::encode(
                 &cfg.me.name,
                 cfg.me.virtual_ip,
                 &addr.ip().to_string(),

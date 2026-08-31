@@ -134,15 +134,15 @@ enum ChromeMsg {
 /// currently-known name -> address mapping as a clickable link, so the
 /// browser is immediately useful even with no starting URL.
 fn build_home_page() -> String {
-    let entries: Vec<(String, String)> = match meow-meow_core::config::Config::load() {
+    let entries: Vec<(String, String)> = match meow_meow_core::config::Config::load() {
         Ok(cfg) => {
-            let mut infos = vec![meow-meow_core::hosts::PeerDomainInfo {
+            let mut infos = vec![meow_meow_core::hosts::PeerDomainInfo {
                 name: cfg.me.name.clone(),
                 virtual_ip: cfg.me.virtual_ip,
                 services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
             }];
             for p in &cfg.peers {
-                infos.push(meow-meow_core::hosts::PeerDomainInfo {
+                infos.push(meow_meow_core::hosts::PeerDomainInfo {
                     name: p.name.clone(),
                     virtual_ip: p.virtual_ip,
                     // Peers' own services are only known once the mesh is
@@ -152,7 +152,7 @@ fn build_home_page() -> String {
                     services: Vec::new(),
                 });
             }
-            meow-meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
+            meow_meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
                 .into_iter()
                 .map(|e| (e.hostname, e.virtual_ip.to_string()))
                 .collect()

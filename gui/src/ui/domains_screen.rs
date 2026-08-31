@@ -6,8 +6,8 @@
 //! that crate's Cargo.toml for why it isn't an embedded egui panel).
 
 use eframe::egui;
-use meow-meow_core::config::Config;
-use meow-meow_core::mesh::DomainNameEntry;
+use meow_meow_core::config::Config;
+use meow_meow_core::mesh::DomainNameEntry;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
@@ -107,8 +107,8 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
             for service in &cfg.services {
                 let hostname = format!(
                     "{}.{}.{}",
-                    meow-meow_core::hosts::sanitize_label(&service.name),
-                    meow-meow_core::hosts::sanitize_label(&cfg.me.name),
+                    meow_meow_core::hosts::sanitize_label(&service.name),
+                    meow_meow_core::hosts::sanitize_label(&cfg.me.name),
                     cfg.me.domain_suffix
                 );
                 ui.horizontal(|ui| {
@@ -232,20 +232,20 @@ fn collect_entries(app: &App, cfg: &Config) -> Vec<DomainNameEntry> {
         return handle.domain_snapshot();
     }
 
-    let infos = vec![meow-meow_core::hosts::PeerDomainInfo {
+    let infos = vec![meow_meow_core::hosts::PeerDomainInfo {
         name: cfg.me.name.clone(),
         virtual_ip: cfg.me.virtual_ip,
         services: cfg.services.iter().map(|s| (s.name.clone(), s.port)).collect(),
     }]
     .into_iter()
-    .chain(cfg.peers.iter().map(|p| meow-meow_core::hosts::PeerDomainInfo {
+    .chain(cfg.peers.iter().map(|p| meow_meow_core::hosts::PeerDomainInfo {
         name: p.name.clone(),
         virtual_ip: p.virtual_ip,
         services: Vec::new(),
     }))
     .collect::<Vec<_>>();
 
-    meow-meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
+    meow_meow_core::hosts::build_entries_with_services(&cfg.me.domain_suffix, &infos)
         .into_iter()
         .map(|e| DomainNameEntry {
             hostname: e.hostname,
@@ -277,7 +277,7 @@ fn add_service(app: &mut App) {
                 if let Some(existing) = cfg.services.iter_mut().find(|s| s.name.eq_ignore_ascii_case(&name)) {
                     existing.port = port;
                 } else {
-                    cfg.services.push(meow-meow_core::config::ServiceConfig { name: name.clone(), port });
+                    cfg.services.push(meow_meow_core::config::ServiceConfig { name: name.clone(), port });
                 }
                 app.save_and_sync_config(cfg);
                 app.show_toast(format!("Service '{name}' saved -- will announce once the mesh starts."));

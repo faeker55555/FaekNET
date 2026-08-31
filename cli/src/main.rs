@@ -1,4 +1,4 @@
-use meow-meow_core::{config, crypto, hosts, mesh, share, stun};
+use meow_meow_core::{config, crypto, hosts, mesh, share, stun};
 
 use config::{Config, MeConfig, PeerConfig};
 use std::io::{self, BufRead, Write};

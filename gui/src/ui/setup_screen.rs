@@ -1,7 +1,7 @@
 use eframe::egui;
-use meow-meow_core::config::{Config, MeConfig};
-use meow-meow_core::crypto::Cipher;
-use meow-meow_core::share;
+use meow_meow_core::config::{Config, MeConfig};
+use meow_meow_core::crypto::Cipher;
+use meow_meow_core::share;
 
 use crate::app_state::{App, AppMode, SetupStage};
 use crate::theme;

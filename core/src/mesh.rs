@@ -154,7 +154,10 @@ fn pick_real_interface(candidates: &[InterfaceCandidate], my_virtual_ip: Option<
         // yet, or a stale adapter left over from a previous run) --
         // deliberately NOT relied on as the sole signal anymore.
         let name_lower = iface.name.to_lowercase();
-        if name_lower == "loopback" || name_lower.starts_with("lanmesh") {
+        // "meowmesh" is the current default dev name (see MEOW_MEOW_DEV_NAME);
+        // keep "lanmesh" too so adapters left over from pre-rename installs
+        // are still excluded by this best-effort heuristic.
+        if name_lower == "loopback" || name_lower.starts_with("meowmesh") || name_lower.starts_with("lanmesh") {
             continue;
         }
         // First non-excluded candidate wins; if multiple physical NICs

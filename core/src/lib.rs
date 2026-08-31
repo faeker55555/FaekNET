@@ -1,4 +1,4 @@
-//! meow-meow_core -- shared networking engine used by both the CLI
+//! meow_meow_core -- shared networking engine used by both the CLI
 //! (`meow-meow_cli`) and the native GUI (`meow-meow_gui`). Everything here is
 //! UI-agnostic: config/key management, the wire protocol, encryption,
 //! gossip-based peer auto-discovery, STUN self-address-discovery, and the

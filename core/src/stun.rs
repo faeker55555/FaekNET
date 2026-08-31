@@ -4,7 +4,7 @@
 // earlier. This is purely a discovery aid for the user to fill in the
 // peer's config; the mesh's actual data path never depends on a STUN
 // server at runtime.
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 const MAGIC_COOKIE: u32 = 0x2112A442;
@@ -124,7 +124,14 @@ pub fn discover_local_addr() -> Option<std::net::Ipv4Addr> {
 pub fn discover_external_addr(local_port: u16, server_host: &str, server_port: u16) -> Option<SocketAddr> {
     let sock = UdpSocket::bind(("0.0.0.0", local_port)).ok()?;
     sock.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    probe_via_sock(&sock, server_host, server_port)
+}
 
+/// The send/receive core of one STUN probe: build the request, send it to
+/// `server_host`/`server_port`, wait for (and parse) the reply. Factored out
+/// of [`discover_external_addr`] so the plain and pinned variants share
+/// exactly one implementation of the probe itself.
+fn probe_via_sock(sock: &UdpSocket, server_host: &str, server_port: u16) -> Option<SocketAddr> {
     let server_ip = std::net::ToSocketAddrs::to_socket_addrs(&(server_host, server_port))
         .ok()?
         .find(|a| a.is_ipv4())?;
@@ -179,6 +186,30 @@ pub fn try_parse_response_for(data: &[u8], tx_id: &[u8; 12]) -> Option<SocketAdd
 pub fn discover_external_addr_any(local_port: u16) -> Option<SocketAddr> {
     for (host, port) in DEFAULT_SERVERS {
         if let Some(addr) = discover_external_addr(local_port, host, *port) {
+            return Some(addr);
+        }
+    }
+    None
+}
+
+/// Pinned counterpart to [`discover_external_addr`]: instead of binding a plain socket, creates (and pins) its probe socket via
+/// [`crate::mesh::create_probe_socket`] so its traffic egresses through the real network interface rather than whatever route the OS picks. This matters when Cloudflare WARP (or another always-on VPN) is active: the default route goes out through WARP, and a plain probe socket would report WARP's own exit IP as "your" public address -- exactly the exclusion problem `warp_compat` solves for mesh sockets.
+pub fn discover_external_addr_pinned(
+    local_port: u16,
+    my_virtual_ip: Option<Ipv4Addr>,
+    server_host: &str,
+    server_port: u16,
+) -> Option<SocketAddr> {
+    let sock = crate::mesh::create_probe_socket(local_port, my_virtual_ip).ok()?;
+    let sock: UdpSocket = sock.into();
+    sock.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    probe_via_sock(&sock, server_host, server_port)
+}
+
+/// Pinned counterpart to [`discover_external_addr_any`]: tries `DEFAULT_SERVERS` in order on a pinned probe socket.
+pub fn discover_external_addr_any_pinned(local_port: u16, my_virtual_ip: Option<Ipv4Addr>) -> Option<SocketAddr> {
+    for (host, port) in DEFAULT_SERVERS {
+        if let Some(addr) = discover_external_addr_pinned(local_port, my_virtual_ip, host, *port) {
             return Some(addr);
         }
     }

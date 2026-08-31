@@ -224,43 +224,64 @@ fn create_udp_socket(
     #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] my_virtual_ip: Option<Ipv4Addr>,
     warp_compat: bool,
 ) -> std::io::Result<UdpSocket> {
-    let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
-    socket.set_reuse_address(true)?;
     if !warp_compat {
         log("WARP-compatibility interface pinning is disabled (warp_compat = false) -- \
 the socket will use whatever route the OS picks normally.");
-    } else {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(iface) = get_real_interface() {
-                match socket.bind_device(Some(iface.as_bytes())) {
-                    Ok(_) => log(&format!("UDP socket bound to device: {}", iface)),
-                    Err(e) => log(&format!(
-                        "Could not bind UDP socket to device ({e}); continuing without it."
-                    )),
-                }
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
+        socket.set_reuse_address(true)?;
+        let addr: SocketAddr = format!("0.0.0.0:{}", listen_port).parse().unwrap();
+        socket.bind(&addr.into())?;
+        return Ok(socket.into());
+    }
+    let socket = create_probe_socket(listen_port, my_virtual_ip)?;
+    Ok(socket.into())
+}
+
+/// Creates a UDP probe socket bound to `0.0.0.0:listen_port` and pins it to
+/// the real (non-VPN) network interface when possible -- mirroring exactly
+/// what `create_udp_socket` does with WARP compatibility enabled, but always
+/// pinning and returning the still-unconverted `socket2::Socket`. The
+/// diagnostic STUN probes (`stun.rs`) use this so their traffic egresses
+/// through the real interface instead of whatever route the OS picks:
+/// if Cloudflare WARP (or another VPN) has rewritten the default route, a
+/// plain probe socket would exit through WARP and report WARP's own exit IP
+/// as "your" public address. Pinning is best-effort -- on failure it logs
+/// and continues unpinned, same trade-off as `create_udp_socket`.
+pub fn create_probe_socket(
+    listen_port: u16,
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] my_virtual_ip: Option<Ipv4Addr>,
+) -> std::io::Result<Socket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, None)?;
+    socket.set_reuse_address(true)?;
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(iface) = get_real_interface() {
+            match socket.bind_device(Some(iface.as_bytes())) {
+                Ok(_) => log(&format!("UDP probe socket bound to device: {}", iface)),
+                Err(e) => log(&format!(
+                    "Could not bind UDP probe socket to device ({e}); continuing without it."
+                )),
             }
         }
-        #[cfg(target_os = "windows")]
-        {
-            if let Some((index, name)) = get_real_interface(my_virtual_ip) {
-                match bind_socket_to_interface_windows(&socket, index) {
-                    Ok(()) => log(&format!("UDP socket bound to interface: {name} (index {index})")),
-                    Err(e) => log(&format!(
-                        "Could not bind UDP socket to interface '{name}' ({e}); continuing without it."
-                    )),
-                }
-            } else {
-                log("Warning: could not identify a non-VPN network interface to bind to; \
-if you have Cloudflare WARP or another always-on VPN active, the mesh's \
-self-detected public address may be wrong. If you are NOT using a VPN and self-STUN \
-still isn't resolving, try disabling \"WARP compatibility\" in Settings.");
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some((index, name)) = get_real_interface(my_virtual_ip) {
+            match bind_socket_to_interface_windows(&socket, index) {
+                Ok(()) => log(&format!("UDP probe socket bound to interface: {name} (index {index})")),
+                Err(e) => log(&format!(
+                    "Could not bind UDP probe socket to interface '{name}' ({e}); continuing without it."
+                )),
             }
+        } else {
+            log("Warning: could not identify a non-VPN network interface to bind the \
+probe socket to; if you have Cloudflare WARP or another always-on VPN active, \
+the probed address may be the VPN's exit IP rather than your own.");
         }
     }
     let addr: SocketAddr = format!("0.0.0.0:{}", listen_port).parse().unwrap();
     socket.bind(&addr.into())?;
-    Ok(socket.into())
+    Ok(socket)
 }
 
 /// Applies IP_UNICAST_IF, the Windows equivalent of Linux's
@@ -394,6 +415,24 @@ impl MeshState {
 
     fn peer_count(&self) -> usize {
         self.peers.read().unwrap().len()
+    }
+
+    /// Resolves a virtual IP to the name of the known peer sitting on it.
+    /// Used by the dev-mode RPC (devmode.rs) to label incoming connections
+    /// with their identity: the tunnel's full-IP router delivers an operator's
+    /// TCP connection from its own virtual adapter, so the source address of
+    /// a connected socket *is* that peer's virtual IP.
+    pub fn peer_name(&self, ip: &Ipv4Addr) -> Option<String> {
+        self.peers.read().unwrap().get(ip).map(|p| p.name())
+    }
+
+    /// Summary of currently known peers (name + virtual IP), for the dev-mode
+    /// RPC's `status` command so an operator can see who is on the mesh.
+    pub fn known_peers(&self) -> Vec<(String, Ipv4Addr)> {
+        self.peers.read().unwrap()
+            .iter()
+            .map(|(ip, p)| (p.name(), *ip))
+            .collect()
     }
 
     /// Provisionally learns a brand-new peer purely from an unsolicited
@@ -1577,6 +1616,12 @@ If this keeps happening, try Settings -> manually enter your public IP/port, or 
 
     log("Mesh is running.");
     log_peer_summary(&state);
+
+    // Dev-mode RPC listener: reachable only through the virtual adapter (the
+    // mesh's own TCP/IPv4 router), so every connection already passed the
+    // AEAD PSK check at the UDP layer; individual commands still require
+    // the two-sided approval that `meow-meow dev enable` establishes.
+    crate::devmode::spawn(state.clone(), my_virtual_ip, running.clone());
 
     // Periodic status log, independent of anything a GUI might also be
     // polling via MeshHandle::snapshot() -- useful for the CLI/journald,

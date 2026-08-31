@@ -18,7 +18,14 @@ pub fn generate_my_card(app: &mut App, cfg: &Config) {
         None
     };
 
-    let addr = known_addr.or_else(|| stun::discover_external_addr_any(cfg.me.listen_port));
+    // With WARP compatibility on (the default), a fresh probe uses a socket pinned to the real network interface so an active VPN's exit IP isn't mistaken for yours.
+    let addr = known_addr.or_else(|| {
+        if cfg.me.warp_compat {
+            stun::discover_external_addr_any_pinned(cfg.me.listen_port, Some(cfg.me.virtual_ip))
+        } else {
+            stun::discover_external_addr_any(cfg.me.listen_port)
+        }
+    });
 
     match addr {
         Some(addr) => {

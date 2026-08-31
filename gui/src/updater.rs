@@ -606,7 +606,9 @@ fn find_payload_dir(root: &Path) -> Result<PathBuf, String> {
 }
 
 /// Pairs each updated file in the package with its counterpart next to
-/// the currently running executable.
+/// the currently running executable. Installs from before the meow-meow
+/// rename (still named `lan_mesh*`) are matched by their old names so a
+/// pre-rename install keeps updating in place instead of erroring out.
 fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate this executable: {e}"))?;
     let exe_dir = exe
@@ -614,25 +616,41 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
         .map(|p| p.to_path_buf())
         .ok_or_else(|| "executable has no parent directory".to_string())?;
 
-    let mut names: Vec<String> = vec![
-        "meow-meow_gui".to_string(),
-        "meow-meow".to_string(),
-        "meow-meow_browser".to_string(),
-    ];
+    let mut names: Vec<(String, Option<String>)> = vec![
+        ("meow-meow_gui", Some("lan_mesh_gui")),
+        ("meow-meow", Some("lan_mesh")),
+        ("meow-meow_browser", Some("lan_mesh_browser")),
+    ]
+    .into_iter()
+    .map(|(n, old)| (n.to_string(), old.map(String::from)))
+    .collect();
     #[cfg(target_os = "windows")]
     {
-        for n in &mut names {
-            n.push_str(".exe");
+        for (name, old) in &mut names {
+            name.push_str(".exe");
+            if let Some(o) = old {
+                o.push_str(".exe");
+            }
         }
-        names.push("wintun.dll".to_string());
+        names.push(("wintun.dll", None));
     }
 
     let mut pairs = Vec::new();
-    for name in names {
+    for (name, old_name) in names {
         let payload = payload_dir.join(&name);
-        let target = exe_dir.join(&name);
-        if payload.is_file() && target.is_file() {
-            pairs.push((payload, target));
+        if !payload.is_file() {
+            continue;
+        }
+        // Prefer the new name at the install location; fall back to the
+        // pre-rename `lan_mesh*` name when that is what this install uses.
+        for target_name in [Some(name.as_str()), old_name.as_deref()] {
+            let Some(target) = target_name.map(|t| exe_dir.join(t)) else {
+                continue;
+            };
+            if target.is_file() {
+                pairs.push((payload.clone(), target));
+                break;
+            }
         }
     }
     if pairs.is_empty() {
@@ -641,12 +659,17 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
     Ok(pairs)
 }
 
+/// Whether this path is the GUI binary -- by current name or the pre-rename
+/// `lan_mesh_gui` name, since that's what an old install runs.
 fn is_gui_binary(path: &Path) -> bool {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    name == "meow-meow_gui" || name == "meow-meow_gui.exe"
+    matches!(
+        name.as_str(),
+        "meow-meow_gui" | "meow-meow_gui.exe" | "lan_mesh_gui" | "lan_mesh_gui.exe"
+    )
 }
 
 #[cfg(not(target_os = "windows"))]

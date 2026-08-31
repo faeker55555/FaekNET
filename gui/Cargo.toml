@@ -1,6 +1,6 @@
 [package]
 name = "meow-meow_gui"
-version = "0.31.0"
+version = "0.5.2"
 edition = "2021"
 
 [dependencies]

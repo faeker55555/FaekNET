@@ -1,6 +1,6 @@
 [package]
 name = "meow-meow_core"
-version = "0.31.0"
+version = "0.5.2"
 edition = "2021"
 
 [dependencies]
@@ -12,6 +12,8 @@ tun-rs = "2"
 chacha20poly1305 = "0.11"
 rand = "0.9"
 base64 = "0.22"
+serde_json = "1"
+sha2 = "0.10"
 
 # Windows-only: used to find the real physical/internet-facing adapter
 # (explicitly skipping VPN-style virtual adapters like Cloudflare WARP's

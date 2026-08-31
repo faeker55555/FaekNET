@@ -417,23 +417,6 @@ impl MeshState {
         self.peers.read().unwrap().len()
     }
 
-    /// Resolves a virtual IP to the name of the known peer sitting on it.
-    /// Used by the dev-mode RPC (devmode.rs) to label incoming connections
-    /// with their identity: the tunnel's full-IP router delivers an operator's
-    /// TCP connection from its own virtual adapter, so the source address of
-    /// a connected socket *is* that peer's virtual IP.
-    pub fn peer_name(&self, ip: &Ipv4Addr) -> Option<String> {
-        self.peers.read().unwrap().get(ip).map(|p| p.name())
-    }
-
-    /// Summary of currently known peers (name + virtual IP), for the dev-mode
-    /// RPC's `status` command so an operator can see who is on the mesh.
-    pub fn known_peers(&self) -> Vec<(String, Ipv4Addr)> {
-        self.peers.read().unwrap()
-            .iter()
-            .map(|(ip, p)| (p.name(), *ip))
-            .collect()
-    }
 
     /// Provisionally learns a brand-new peer purely from an unsolicited
     /// but authenticated PING -- the fix for the "my friend added me and
@@ -1617,11 +1600,6 @@ If this keeps happening, try Settings -> manually enter your public IP/port, or 
     log("Mesh is running.");
     log_peer_summary(&state);
 
-    // Dev-mode RPC listener: reachable only through the virtual adapter (the
-    // mesh's own TCP/IPv4 router), so every connection already passed the
-    // AEAD PSK check at the UDP layer; individual commands still require
-    // the two-sided approval that `meow-meow dev enable` establishes.
-    crate::devmode::spawn(state.clone(), my_virtual_ip, running.clone());
 
     // Periodic status log, independent of anything a GUI might also be
     // polling via MeshHandle::snapshot() -- useful for the CLI/journald,

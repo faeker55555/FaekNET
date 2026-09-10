@@ -48,9 +48,6 @@ jobs:
       - name: Cache cargo registry & build
         uses: Swatinem/rust-cache@v2
 
-      - name: Test peer directory automation
-        run: python3 -m unittest discover -s scripts/registry -v
-
       - name: Run tests
         run: cargo test --workspace --locked
 

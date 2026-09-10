@@ -1,3 +1,4 @@
+mod components;
 mod domains_screen;
 mod log_screen;
 mod network_screen;

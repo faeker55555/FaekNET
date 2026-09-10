@@ -4,6 +4,7 @@ use meow_meow_core::stun;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
+use super::components::{kv_row, section};
 
 /// Builds a peer card for the current identity. If the mesh is already
 /// running, its own background self-STUN thread has (usually) already
@@ -58,6 +59,30 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
     let Some(cfg) = app.current_config() else {
         return;
     };
+
+    ui.heading("Settings");
+    ui.add_space(14.0);
+
+    section(ui, "Peer directory", |ui| {
+        let mut enabled = cfg.me.repository_discovery;
+        ui.add_enabled_ui(!matches!(app.mode, AppMode::Running { .. }), |ui| {
+            ui.checkbox(&mut enabled, "Discover the shared network from GitHub");
+        });
+        ui.label("Uses the public FaekNET directory. Requires an enrolled 10.66.0.x address and the privately shared network key.");
+        ui.colored_label(theme::TEXT_DIM, "Stop the mesh to change this. Automatic publication uses the separate GitHub publisher; it never uploads your key.");
+        if enabled != cfg.me.repository_discovery {
+            let mut updated = cfg.clone();
+            updated.me.repository_discovery = enabled;
+            match updated.save() {
+                Ok(()) => {
+                    if let AppMode::Stopped { config } = &mut app.mode { *config = updated; }
+                    app.show_toast("Peer directory setting saved.");
+                }
+                Err(error) => app.show_toast(format!("Could not save peer directory setting: {error}")),
+            }
+        }
+    });
+    ui.add_space(14.0);
 
     section(ui, "IDENTITY", |ui| {
         kv_row(ui, "NAME", &cfg.me.name);
@@ -593,26 +618,4 @@ fn reset_public_addr_action(app: &mut App) {
             }
         }
     }
-}
-
-fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(theme::BG_PANEL)
-        .stroke(egui::Stroke::new(1.0f32, theme::LINE))
-        .inner_margin(egui::Margin::same(16))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(title).color(theme::TEXT_DIM).size(11.0).strong());
-            ui.add_space(10.0);
-            body(ui);
-        });
-}
-
-fn kv_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(theme::TEXT_DIM).size(11.0));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).color(theme::TEXT_BRIGHT).monospace());
-        });
-    });
-    ui.add_space(4.0);
 }

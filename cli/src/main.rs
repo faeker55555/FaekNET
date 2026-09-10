@@ -152,6 +152,7 @@ fn cmd_init() {
 
     let cfg = Config {
         me: MeConfig {
+            repository_discovery: false,
             name,
             virtual_ip,
             prefix,

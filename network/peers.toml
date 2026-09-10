@@ -1,0 +1,4 @@
+# Public bootstrap directory. Never put the shared key or credentials here.
+# Updated from validated GitHub issue requests by the peer-registry workflow.
+schema_version = 1
+peers = []

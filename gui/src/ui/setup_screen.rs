@@ -205,6 +205,7 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
 
     Ok(Config {
         me: MeConfig {
+            repository_discovery: false,
             name: if form.name.trim().is_empty() { "player".to_string() } else { form.name.trim().to_string() },
             virtual_ip,
             prefix,

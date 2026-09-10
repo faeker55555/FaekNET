@@ -21,9 +21,10 @@ pub fn draw(app: &mut App, ctx: &egui::Context) {
 }
 
 fn draw_nav_rail(app: &mut App, ctx: &egui::Context) {
+    let expanded = ctx.screen_rect().width() >= 900.0;
     egui::SidePanel::left("nav_rail")
         .resizable(false)
-        .exact_width(56.0)
+        .exact_width(if expanded { 190.0 } else { 56.0 })
         .frame(
             egui::Frame::new()
                 .fill(theme::BG_PANEL)
@@ -32,15 +33,18 @@ fn draw_nav_rail(app: &mut App, ctx: &egui::Context) {
         )
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                nav_button(ui, app, Screen::Network, "N", "Network overview");
+                // Keep the rail utility-first: identity belongs in the account
+                // context, not as a logo/name lockup above navigation.
+                ui.add_space(10.0);
+                nav_button(ui, app, Screen::Network, if expanded { "Overview" } else { "N" }, "Network overview");
                 ui.add_space(4.0);
-                nav_button(ui, app, Screen::Peers, "P", "Peers");
+                nav_button(ui, app, Screen::Peers, if expanded { "Peers" } else { "P" }, "Peers");
                 ui.add_space(4.0);
-                nav_button(ui, app, Screen::Domains, "D", "Local domain names / browser");
+                nav_button(ui, app, Screen::Domains, if expanded { "Domains" } else { "D" }, "Local domain names / browser");
                 ui.add_space(4.0);
-                nav_button(ui, app, Screen::Log, "L", "Activity log");
+                nav_button(ui, app, Screen::Log, if expanded { "Activity" } else { "L" }, "Activity log");
                 ui.add_space(4.0);
-                nav_button(ui, app, Screen::Settings, "S", "Settings");
+                nav_button(ui, app, Screen::Settings, if expanded { "Settings" } else { "S" }, "Settings");
             });
         });
 }
@@ -52,9 +56,9 @@ fn nav_button(ui: &mut egui::Ui, app: &mut App, screen: Screen, letter: &str, to
     } else {
         (theme::BG_ELEVATED, theme::TEXT_DIM)
     };
-    let btn = egui::Button::new(egui::RichText::new(letter).monospace().size(15.0).color(fg))
+    let btn = egui::Button::new(egui::RichText::new(letter).size(14.0).color(fg))
         .fill(bg)
-        .min_size(egui::vec2(36.0, 36.0));
+        .min_size(egui::vec2((ui.available_width() - 16.0).max(36.0), 36.0));
     if ui.add(btn).on_hover_text(tooltip).clicked() {
         app.screen = screen;
     }

@@ -8,10 +8,12 @@ with a `VpnService` boundary and the intended mesh-only route:
 other traffic -> Android normal routing
 ```
 
-The Rust mesh core is not connected to the TUN file descriptor yet. The service is
-therefore an **alpha shell**, not a usable VPN: it establishes the Android consent
-and lifecycle path, but does not forward mesh packets. Do not use this build as a
-production VPN.
+The first direct-peer transport is now implemented in Kotlin: it routes IPv4 packets for
+`10.66.0.0/24` through the TUN, encrypts them with the desktop-compatible
+ChaCha20-Poly1305 envelope, and sends them to configured peer `IP:port` endpoints.
+It is still an alpha: there is no repository discovery, roaming, relay forwarding,
+IPv6, broadcast flooding, or proxy mode yet. Use a private test network and do not
+expose the UDP port without a firewall.
 
 ## Build
 

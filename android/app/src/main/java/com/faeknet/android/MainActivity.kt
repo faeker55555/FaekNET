@@ -4,94 +4,48 @@ import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
 import android.os.Bundle
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Switch
-import android.widget.TextView
+import android.graphics.Color
+import android.view.ViewGroup
+import android.widget.*
 
-/** First Android shell. Mesh packets are not handled until the Rust bridge is attached. */
+/** Minimal direct-peer configuration for the first usable APK. */
 class MainActivity : Activity() {
     private lateinit var status: TextView
-    private var manualRoute = false
-    private var proxyMode = false
+    private lateinit var vip: EditText
+    private lateinit var port: EditText
+    private lateinit var psk: EditText
+    private lateinit var peers: EditText
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 24)
-            setBackgroundColor(0xFF171616.toInt())
-        }
-        val title = TextView(this).apply {
-            text = "FaekNET"
-            textSize = 28f
-            setTextColor(0xFFE9E4DF.toInt())
-        }
-        root.addView(title)
-        status = TextView(this).apply {
-            text = "Android VPN shell · stopped"
-            textSize = 14f
-            setTextColor(0xFF9B9189.toInt())
-            setPadding(0, 20, 0, 20)
-        }
-        root.addView(status)
-
-        val meshOnly = TextView(this).apply {
-            text = "Mesh-only routing\n10.66.0.0/24 → FaekNET VPN\nOther traffic → Android normally"
-            textSize = 15f
-            setTextColor(0xFFB5AAA2.toInt())
-            setPadding(0, 12, 0, 20)
-        }
-        root.addView(meshOnly)
-        addSwitch(root, "Manual route selection", "Hold the selected authenticated route", false) { manualRoute = it }
-        addSwitch(root, "Proxy non-mesh traffic", "TCP proxy plumbing is not connected yet", false) { proxyMode = it }
-
-        val start = Button(this).apply {
-            text = "START VPN"
-            setOnClickListener { requestVpnPermission() }
-        }
-        root.addView(start, LinearLayout.LayoutParams(-1, -2).apply { topMargin = 24 })
-        val note = TextView(this).apply {
-            text = "Alpha shell: the VPN permission and split route are implemented first. Rust mesh transport, relay forwarding, repository sync, and proxy forwarding are staged behind the native bridge."
-            textSize = 12f
-            setTextColor(0xFF9B9189.toInt())
-            setPadding(0, 24, 0, 0)
-        }
-        root.addView(note)
+        val root = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(32,28,32,24); setBackgroundColor(Color.rgb(23,22,22)) }
+        root.addView(label("FaekNET Android", 28f, Color.rgb(233,228,223)))
+        status = label("Direct mesh · stopped", 14f, Color.rgb(155,145,137)); root.addView(status)
+        root.addView(label("Routes 10.66.0.0/24 through the VPN. Other traffic stays on Android's normal network.", 13f, Color.rgb(181,170,162)))
+        vip = field(root, "Your virtual IP", "10.66.0.1")
+        port = field(root, "Local UDP port", "54321")
+        psk = field(root, "Private PSK (base64, 32 bytes)", "", true)
+        peers = field(root, "Peers: virtual-ip=public-ip:port, comma separated", "10.66.0.2=203.0.113.25:54321")
+        val start = Button(this).apply { text="START MESH VPN"; setOnClickListener { requestVpnPermission() } }
+        root.addView(start, LinearLayout.LayoutParams(-1,-2).apply { topMargin=20 })
+        val stop = Button(this).apply { text="STOP"; setOnClickListener { stopService(Intent(this@MainActivity, MeshVpnService::class.java)); status.text="Direct mesh · stopped" } }
+        root.addView(stop)
+        root.addView(label("This first APK supports direct encrypted IPv4 peer traffic for SSH, HTTP and similar applications. Relay routes, repository discovery and NAT roaming are the next bridge layer.", 12f, Color.rgb(155,145,137)))
         setContentView(ScrollView(this).apply { addView(root) })
     }
 
-    private fun addSwitch(parent: LinearLayout, label: String, detail: String, checked: Boolean, changed: (Boolean) -> Unit) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 10, 0, 4) }
-        val toggle = Switch(this).apply {
-            text = label
-            textSize = 15f
-            setTextColor(0xFFE9E4DF.toInt())
-            isChecked = checked
-            setOnCheckedChangeListener { _, value -> changed(value) }
-        }
-        row.addView(toggle)
-        row.addView(TextView(this).apply { text = detail; textSize = 12f; setTextColor(0xFF9B9189.toInt()) })
-        parent.addView(row)
+    private fun label(text: String, size: Float, color: Int) = TextView(this).apply { this.text=text; textSize=size; setTextColor(color); setPadding(0,10,0,10) }
+    private fun field(root: LinearLayout, hint: String, value: String, password: Boolean=false): EditText {
+        root.addView(label(hint, 12f, Color.rgb(155,145,137)))
+        return EditText(this).apply { setText(value); textSize=14f; setTextColor(Color.rgb(233,228,223)); setHintTextColor(Color.rgb(120,112,106)); hint=hint; if(password) inputType=0x81; root.addView(this, ViewGroup.LayoutParams(-1,-2)) }
     }
-
     private fun requestVpnPermission() {
-        val intent = VpnService.prepare(this)
-        if (intent != null) startActivityForResult(intent, REQUEST_VPN)
-        else onActivityResult(REQUEST_VPN, RESULT_OK, null)
+        val intent=VpnService.prepare(this); if(intent != null) startActivityForResult(intent, REQUEST_VPN) else startMesh()
     }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_VPN || resultCode != RESULT_OK) return
-        startService(Intent(this, FaekVpnService::class.java).apply {
-            putExtra(FaekVpnService.EXTRA_MANUAL_ROUTE, manualRoute)
-            putExtra(FaekVpnService.EXTRA_PROXY_MODE, proxyMode)
-        })
-        status.text = "Android VPN · starting"
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) { super.onActivityResult(requestCode,resultCode,data); if(requestCode==REQUEST_VPN && resultCode==RESULT_OK) startMesh() }
+    private fun startMesh() {
+        startService(Intent(this, MeshVpnService::class.java).apply { putExtra(MeshVpnService.EXTRA_VIP,vip.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PORT,port.text.toString().toIntOrNull() ?: 54321); putExtra(MeshVpnService.EXTRA_PSK,psk.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PEERS,peers.text.toString().trim()) })
+        status.text="Direct mesh · starting"
     }
-
-    companion object { private const val REQUEST_VPN = 7001 }
+    companion object { private const val REQUEST_VPN=7001; fun notification(service: android.content.Context, text: String): android.app.Notification { val id="faeknet-vpn"; val manager=service.getSystemService(android.app.NotificationManager::class.java); if(android.os.Build.VERSION.SDK_INT>=26) manager.createNotificationChannel(android.app.NotificationChannel(id,"FaekNET VPN",android.app.NotificationManager.IMPORTANCE_LOW)); return if(android.os.Build.VERSION.SDK_INT>=26) android.app.Notification.Builder(service,id).setContentTitle("FaekNET").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_data_connected).setOngoing(true).build() else { @Suppress("DEPRECATION") val b=android.app.Notification.Builder(service); b.setContentTitle("FaekNET").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_data_connected).setOngoing(true).build() } } }
 }

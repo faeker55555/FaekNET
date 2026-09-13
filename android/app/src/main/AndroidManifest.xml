@@ -17,7 +17,7 @@
             </intent-filter>
         </activity>
         <service
-            android:name=".FaekVpnService"
+            android:name=".MeshVpnService"
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
             android:foregroundServiceType="specialUse">

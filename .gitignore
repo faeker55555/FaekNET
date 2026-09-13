@@ -7,3 +7,11 @@ mesh.toml
 
 # GUI preferences (created at runtime)
 gui.toml
+
+# Local public-endpoint publisher handoff/state
+.faeknet-endpoint.toml
+.faeknet-registry-state.json
+
+# Python registry helper/test artifacts
+__pycache__/
+*.pyc

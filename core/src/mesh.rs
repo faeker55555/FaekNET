@@ -1012,6 +1012,13 @@ pub struct DomainNameEntry {
 /// blocks the calling thread forever (fine for a CLI's main thread, fatal
 /// for a GUI's event loop thread).
 pub fn start(config: Config) -> std::io::Result<MeshHandle> {
+    if config.me.repository_discovery
+        && (config.me.prefix != 24 || config.me.virtual_ip.octets()[..3] != [10, 66, 0]
+            || config.me.virtual_ip.octets()[3] == 0 || config.me.virtual_ip.octets()[3] == 255)
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+            "Repository discovery requires an enrolled host address in 10.66.0.0/24"));
+    }
     let cipher = Cipher::from_psk_b64(&config.me.psk)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -1140,6 +1147,47 @@ On Windows this needs Administrator and wintun.dll next to the executable."
     sock.set_read_timeout(Some(RECV_LOOP_TIMEOUT))?;
 
     let running = Arc::new(AtomicBool::new(true));
+
+    // ---- Read-only public directory: optional GitHub bootstrap, never a relay ----
+    if state.config.lock().unwrap().me.repository_discovery {
+        let state = state.clone();
+        let running = running.clone();
+        thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                match crate::registry::fetch(now_secs()) {
+                    Ok(entries) => {
+                        if !running.load(Ordering::Relaxed) { break; }
+                        let mut added = 0;
+                        for peer in state.peers_snapshot() {
+                            peer.set_registry_candidate(None);
+                        }
+                        for entry in entries {
+                            if entry.virtual_ip == state.my_virtual_ip { continue; }
+                            let addr = SocketAddr::new(entry.public_ip.parse().unwrap(), entry.public_port);
+                            let mut peers = state.peers.write().unwrap();
+                            if let Some(existing) = peers.get(&entry.virtual_ip) {
+                                // A commit is a discovery hint, not proof of reachability.
+                                // Keep sending on the old path while probing this candidate.
+                                existing.set_registry_candidate(Some(addr));
+                            } else if peers.len() < MAX_PEERS {
+                                peers.insert(entry.virtual_ip, Arc::new(Peer::new(&entry)));
+                                added += 1;
+                            }
+                        }
+                        if added > 0 {
+                            log(&format!("Repository discovery added {added} bootstrap peer(s)."));
+                            refresh_domain_names(&state);
+                        }
+                    }
+                    Err(error) => log(&format!("Peer directory unavailable: {error}; existing connections continue.")),
+                }
+                for _ in 0..60 {
+                    if !running.load(Ordering::Relaxed) { return; }
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }
+        });
+    }
 
     // ---- TUN -> UDP: packets from local apps/games headed onto the virtual LAN ----
     {
@@ -1378,45 +1426,22 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                     break;
                 }
                 for peer in state.peers_snapshot() {
-                    let wire_plain = proto::build(proto::TYPE_PING, state.my_virtual_ip, &seq.to_be_bytes());
-                    let wire = state.cipher.seal(&wire_plain);
-                    let mut pinged = false;
-                    if let Some(addr) = peer.current_send_addr() {
-                        // A TYPE_PING doubles as the keepalive itself (it
-                        // still refreshes the NAT mapping and updates
-                        // last-seen via the PONG's observe() call), while
-                        // additionally giving us a live RTT reading for
-                        // the periodic status log.
-                        let _ = sock.send_to(&wire, addr);
-                        pinged = true;
+                    let mut targets = Vec::new();
+                    for addr in [peer.current_send_addr(), peer.lan_candidate(), peer.registry_candidate()]
+                        .into_iter().flatten()
+                    {
+                        if !targets.contains(&addr) { targets.push(addr); }
                     }
-                    // Also probe the peer's self-reported LAN candidate,
-                    // if any and if it's a different address than the one
-                    // above -- this is what lets two peers behind the
-                    // same router/public IP (where the public path often
-                    // silently never works at all, since it depends on
-                    // NAT hairpin/loopback support most consumer routers
-                    // lack) find each other over the LAN instead. Cheap
-                    // and harmless to keep trying indefinitely on peers
-                    // that turn out to be on a different network: it's
-                    // just one extra small UDP packet every
-                    // KEEPALIVE_INTERVAL that will simply never get a
-                    // reply, exactly like pinging any other unreachable
-                    // address. Whichever candidate (public or LAN)
-                    // actually answers is what `Peer::observe()` promotes
-                    // to `confirmed_addr` on the receiving end -- no
-                    // separate "prefer LAN" logic needed here at all.
-                    if let Some(lan_addr) = peer.lan_candidate() {
-                        if Some(lan_addr) != peer.current_send_addr() {
-                            let _ = sock.send_to(&wire, lan_addr);
-                            pinged = true;
-                        }
-                    }
-                    if pinged {
+                    for addr in targets {
+                        let wire_plain = proto::build(proto::TYPE_PING, state.my_virtual_ip, &seq.to_be_bytes());
+                        let wire = state.cipher.seal(&wire_plain);
+                        // Register before send so immediate replies cannot win the race.
+                        // Distinct candidates receive distinct RTT measurements.
                         peer.record_ping_sent(seq);
+                        let _ = sock.send_to(&wire, addr);
+                        seq = seq.wrapping_add(1);
                     }
                 }
-                seq = seq.wrapping_add(1);
                 thread::sleep(KEEPALIVE_INTERVAL);
             }
         });
@@ -1506,6 +1531,14 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                 let manual_addr_now = state.config.lock().unwrap().manual_public_addr();
                 if let Some(manual_addr) = manual_addr_now {
                     let changed = state.my_public_addr.lock().unwrap().map(|(a, _)| a) != Some(manual_addr);
+                    {
+                        let cfg = state.config.lock().unwrap();
+                        if cfg.me.repository_discovery {
+                            if let Err(error) = crate::registry::write_endpoint(&cfg.me, manual_addr, now_secs()) {
+                                log(&format!("Could not write public endpoint handoff: {error}"));
+                            }
+                        }
+                    }
                     if changed {
                         log(&format!(
                             "Using manually configured public address {manual_addr} -- self-STUN discovery is disabled while this is set."
@@ -1537,6 +1570,11 @@ adding them so we can reach back (their real name will arrive shortly via gossip
                                 send_gossip_burst(&state, &sock);
                             }
                             let mut cfg = state.config.lock().unwrap();
+                            if cfg.me.repository_discovery {
+                                if let Err(error) = crate::registry::write_endpoint(&cfg.me, addr, now_secs()) {
+                                    log(&format!("Could not write public endpoint handoff: {error}"));
+                                }
+                            }
                             if cfg.me.cache_public_addr {
                                 let already_cached = cfg.cached_public_addr() == Some(addr);
                                 if !already_cached {
@@ -1771,6 +1809,7 @@ mod tests {
         let cipher = Cipher::from_psk_b64(&Cipher::generate_psk_b64()).unwrap();
         let config = Config {
             me: MeConfig {
+                repository_discovery: true,
                 name: "me".to_string(),
                 virtual_ip: "10.0.0.1".parse().unwrap(),
                 prefix: 24,

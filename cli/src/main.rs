@@ -119,11 +119,9 @@ fn cmd_init() {
         }
     };
 
-    let prefix_str = prompt_with_default("Subnet prefix length", "24");
-    let prefix: u8 = prefix_str.parse().unwrap_or(24);
-
-    let listen_port_str = prompt_with_default("UDP port to listen on", "54321");
-    let listen_port: u16 = listen_port_str.parse().unwrap_or(54321);
+    // Stable network defaults keep first-run setup to name, virtual IP and key.
+    let prefix: u8 = 24;
+    let listen_port: u16 = 54321;
 
     let psk = loop {
         let existing = prompt(
@@ -145,13 +143,11 @@ fn cmd_init() {
         println!("That doesn't look like a valid key (expected 32 bytes, base64-encoded). Try again.");
     };
 
-    let domain_suffix = prompt_with_default(
-        "Local domain suffix (peers become reachable as <name>.<suffix>)",
-        "mesh",
-    );
+    let domain_suffix = "mesh".to_string();
 
     let cfg = Config {
         me: MeConfig {
+            repository_discovery: true,
             name,
             virtual_ip,
             prefix,
@@ -175,8 +171,7 @@ fn cmd_init() {
     };
     cfg.save().expect("failed to write mesh.toml");
     println!("\nSaved {}.", config::CONFIG_PATH);
-    println!("Next: run `meow-meow export`, send the printed line to a friend, and have them");
-    println!("run `meow-meow import <that line>` (and vice versa) to connect.");
+    println!("Repository discovery is enabled: the shared peer directory will be fetched automatically.");
 }
 
 fn cmd_add_peer() {

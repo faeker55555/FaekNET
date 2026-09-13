@@ -1,7 +1,8 @@
 # meow-meow net
 
 A small, self-hosted, pure peer-to-peer **virtual LAN** — in the spirit of Radmin VPN /
-Hamachi, but with **no third-party relay, rendezvous server, or VPN service**. Every peer
+Hamachi, with **no third-party relay or VPN service**. Default discovery needs no central server;
+an optional GitHub directory provides a shared bootstrap list. Every peer
 runs the same binary, exchanges a one-line "peer card" once, and gets a virtual network
 adapter (`10.66.0.x`) that behaves like a real LAN NIC: LAN games discover each other via
 simulated broadcast, TCP services are reachable by virtual IP or mesh domain name, and all
@@ -12,7 +13,8 @@ Linux + Windows. Two front ends, one engine: a **native GUI** (egui/eframe) and 
 
 ## Features
 
-- **Pure P2P** — direct UDP hole-punching between peers. No accounts, no relay, no central server.
+- **Pure P2P transport** — direct UDP hole-punching between peers, with no relay.
+  Default discovery needs no account; optional directory publication uses GitHub accounts.
 - **Real virtual adapter (TUN)** — Wintun on Windows, `/dev/net/tun` on Linux; the mesh looks
   like a normal network interface, so any LAN-capable app works unchanged.
 - **Encrypted everywhere** — every packet is sealed with ChaCha20-Poly1305 AEAD under a pre-shared key.
@@ -84,6 +86,31 @@ sudo ./meow-meow run              # or launch the GUI
 
 Games that scan/broadcast on local subnets will now find mesh peers automatically; to connect
 directly, use the peer's virtual IP (or mesh name, see below).
+
+## One shared network via GitHub
+
+The public peer directory bootstraps everyone into the same `10.66.0.0/24`
+mesh. New installations fetch it automatically; existing installations can enable
+`repository_discovery = true` under `[me]`. Enrolled GitHub users can run a separate automatic endpoint publisher;
+GitHub Actions validates requests and updates `network/peers.toml`.
+
+The shared network key stays private and is **never** uploaded. Publishing exposes
+names, GitHub logins and public IP:port endpoints in public Issues and Git history.
+Initial GitHub-account/IP enrollment is required; updates are automatic afterward.
+This is discovery, not a relay or a symmetric-NAT workaround.
+
+See [network setup, privacy, and automatic publication](network/README.md).
+The directory and workflow must be deployed to the default branch before clients can
+fetch or update it. Existing configurations with an explicit false setting remain
+opted out until changed.
+
+## Android VPN and routing
+
+Android support is technically feasible through `VpnService`; the implementation plan, split-routing behavior, proxy limitations, and manual route safety rules are documented in [`network/ANDROID.md`](network/ANDROID.md). The repository currently has no Android module or APK.
+
+## Hot-plug membership
+
+The planned cache-and-gossip startup flow, stable member IDs, active Git fetcher lease, and endpoint candidate rules are documented in [`network/HOTPLUG.md`](network/HOTPLUG.md). The current implementation still fetches the repository directly from each opted-in process; this flow is not implemented yet.
 
 ## CLI
 

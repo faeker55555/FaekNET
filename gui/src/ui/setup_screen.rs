@@ -46,9 +46,8 @@ fn draw_form(app: &mut App, ui: &mut egui::Ui) {
 
             labeled_field(ui, "DISPLAY NAME", &mut form.name);
             labeled_field(ui, "VIRTUAL IP", &mut form.virtual_ip);
-            labeled_field(ui, "SUBNET PREFIX", &mut form.prefix);
-            labeled_field(ui, "LISTEN PORT", &mut form.listen_port);
-            labeled_field(ui, "LOCAL DOMAIN SUFFIX (peers become <name>.<suffix>)", &mut form.domain_suffix);
+            ui.label(egui::RichText::new("Defaults: 10.66.0.0/24 · UDP 54321 · .mesh").color(theme::TEXT_DIM).size(10.5));
+            ui.add_space(6.0);
 
             ui.add_space(6.0);
             ui.label(egui::RichText::new("PRE-SHARED KEY").color(theme::TEXT_DIM).size(11.0));
@@ -122,10 +121,9 @@ fn draw_form(app: &mut App, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "If a friend is already running meow-meow, paste the card they sent you. \
-                     Otherwise start solo -- you can add peers any time from the Peers screen, \
-                     and once you're connected to just ONE other member, the rest of the mesh \
-                     is discovered automatically.",
+                    "Your shared GitHub peer directory is fetched automatically. You only need \
+                     your name, virtual IP and private mesh key. A peer card is optional fallback \
+                     when the repository is unavailable.",
                 )
                 .color(theme::TEXT_NORMAL)
                 .size(12.5),
@@ -205,7 +203,7 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
 
     Ok(Config {
         me: MeConfig {
-            repository_discovery: false,
+            repository_discovery: true,
             name: if form.name.trim().is_empty() { "player".to_string() } else { form.name.trim().to_string() },
             virtual_ip,
             prefix,

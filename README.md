@@ -89,9 +89,9 @@ directly, use the peer's virtual IP (or mesh name, see below).
 
 ## One shared network via GitHub
 
-An optional public peer directory can bootstrap everyone into the same `10.66.0.0/24`
-mesh. Enable **Settings → Peer directory** (or `repository_discovery = true` under
-`[me]`). Enrolled GitHub users can run a separate automatic endpoint publisher;
+The public peer directory bootstraps everyone into the same `10.66.0.0/24`
+mesh. New installations fetch it automatically; existing installations can enable
+`repository_discovery = true` under `[me]`. Enrolled GitHub users can run a separate automatic endpoint publisher;
 GitHub Actions validates requests and updates `network/peers.toml`.
 
 The shared network key stays private and is **never** uploaded. Publishing exposes
@@ -100,8 +100,9 @@ Initial GitHub-account/IP enrollment is required; updates are automatic afterwar
 This is discovery, not a relay or a symmetric-NAT workaround.
 
 See [network setup, privacy, and automatic publication](network/README.md).
-The directory starts empty and the workflow must be deployed to the default branch
-before it can accept requests. Existing configurations remain opted out.
+The directory and workflow must be deployed to the default branch before clients can
+fetch or update it. Existing configurations with an explicit false setting remain
+opted out until changed.
 
 ## Android VPN and routing
 

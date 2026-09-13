@@ -1809,7 +1809,7 @@ mod tests {
         let cipher = Cipher::from_psk_b64(&Cipher::generate_psk_b64()).unwrap();
         let config = Config {
             me: MeConfig {
-                repository_discovery: false,
+                repository_discovery: true,
                 name: "me".to_string(),
                 virtual_ip: "10.0.0.1".parse().unwrap(),
                 prefix: 24,

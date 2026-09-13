@@ -9,7 +9,7 @@ raw-file caching affect discovery speed; this is not real-time rendezvous.
 
 - `members.toml` assigns GitHub accounts to unique virtual IPs in `10.66.0.0/24`.
 - `peers.toml` contains only public names, virtual IPs, public IPv4/UDP endpoints,
-  owner logins and timestamps. It starts empty; example addresses are not live peers.
+  owner logins and timestamps. It may contain public bootstrap entries; endpoint rows must be enrolled and validated before automated updates.
 - The shared network encryption key stays **outside GitHub**, distributed privately.
   Neither publisher nor workflow reads it. The publisher never reads `mesh.toml`.
 - Publishing creates a public GitHub issue and a public Git commit. Old endpoints
@@ -63,10 +63,10 @@ write permission. Accounts need permission to open an issue in this public repos
    repository_discovery = true
    ```
 
-   This is opt-in (off by default) so existing private meshes do not unexpectedly
-   contact the shared network or expose their metadata.
+   New installations enable this automatically. Existing configurations that explicitly
+   set it to false remain local-only until you enable it.
 3. The mesh fetches the directory on startup in a background thread, then every
-   minute. A missing file/download failure does not stop existing networking.
+   five minutes. A missing file/download failure does not stop existing networking.
    For existing peers, a changed directory endpoint is kept as a probe candidate;
    the confirmed send address changes only after authenticated traffic arrives.
    First-time bootstrap peers still start from their configured directory hint.

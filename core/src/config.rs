@@ -8,7 +8,7 @@ pub const CONFIG_PATH: &str = "mesh.toml";
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MeConfig {
     /// Opt-in public GitHub bootstrap directory (10.66.0.0/24 only).
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub repository_discovery: bool,
     /// Display name shown to peers (used when generating an `export` peer
     /// card). Purely cosmetic.
@@ -276,7 +276,7 @@ mod tests {
     fn base_config() -> Config {
         Config {
             me: MeConfig {
-                repository_discovery: false,
+                repository_discovery: true,
                 name: "me".to_string(),
                 virtual_ip: "10.66.0.1".parse().unwrap(),
                 prefix: 24,
@@ -301,10 +301,10 @@ mod tests {
     }
 
     #[test]
-    fn repository_discovery_is_opt_in_and_round_trips() {
+    fn repository_discovery_defaults_on_and_round_trips() {
         let legacy = "[me]\nvirtual_ip = '10.66.0.2'\nlisten_port = 54321\npsk = ''\n";
         let cfg: Config = toml::from_str(legacy).unwrap();
-        assert!(!cfg.me.repository_discovery);
+        assert!(cfg.me.repository_discovery);
         let mut cfg = base_config();
         cfg.me.repository_discovery = true;
         let decoded: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();

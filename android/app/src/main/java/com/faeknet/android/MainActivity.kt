@@ -15,6 +15,7 @@ class MainActivity : Activity() {
     private lateinit var port: EditText
     private lateinit var psk: EditText
     private lateinit var peers: EditText
+    private lateinit var discovery: CheckBox
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -25,7 +26,9 @@ class MainActivity : Activity() {
         vip = field(root, "Your virtual IP", "10.66.0.1")
         port = field(root, "Local UDP port", "54321")
         psk = field(root, "Private PSK (base64, 32 bytes)", "", true)
-        peers = field(root, "Peers: virtual-ip=public-ip:port, comma separated", "10.66.0.2=203.0.113.25:54321")
+        peers = field(root, "Optional peers: virtual-ip=public-ip:port, comma separated", "")
+        discovery = CheckBox(this).apply { text="Discover peers from GitHub"; isChecked=true; setTextColor(Color.rgb(233,228,223)); tag="directory" }
+        root.addView(discovery)
         val start = Button(this).apply { text="START MESH VPN"; setOnClickListener { requestVpnPermission() } }
         root.addView(start, LinearLayout.LayoutParams(-1,-2).apply { topMargin=20 })
         val stop = Button(this).apply { text="STOP"; setOnClickListener { stopService(Intent(this@MainActivity, MeshVpnService::class.java)); status.text="Direct mesh · stopped" } }
@@ -44,7 +47,7 @@ class MainActivity : Activity() {
     }
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) { super.onActivityResult(requestCode,resultCode,data); if(requestCode==REQUEST_VPN && resultCode==RESULT_OK) startMesh() }
     private fun startMesh() {
-        startService(Intent(this, MeshVpnService::class.java).apply { putExtra(MeshVpnService.EXTRA_VIP,vip.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PORT,port.text.toString().toIntOrNull() ?: 54321); putExtra(MeshVpnService.EXTRA_PSK,psk.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PEERS,peers.text.toString().trim()) })
+        startService(Intent(this, MeshVpnService::class.java).apply { putExtra(MeshVpnService.EXTRA_VIP,vip.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PORT,port.text.toString().toIntOrNull() ?: 54321); putExtra(MeshVpnService.EXTRA_PSK,psk.text.toString().trim()); putExtra(MeshVpnService.EXTRA_PEERS,peers.text.toString().trim()); putExtra(MeshVpnService.EXTRA_DISCOVERY, discovery.isChecked) })
         status.text="Direct mesh · starting"
     }
     companion object { private const val REQUEST_VPN=7001; fun notification(service: android.content.Context, text: String): android.app.Notification { val id="faeknet-vpn"; val manager=service.getSystemService(android.app.NotificationManager::class.java); if(android.os.Build.VERSION.SDK_INT>=26) manager.createNotificationChannel(android.app.NotificationChannel(id,"FaekNET VPN",android.app.NotificationManager.IMPORTANCE_LOW)); return if(android.os.Build.VERSION.SDK_INT>=26) android.app.Notification.Builder(service,id).setContentTitle("FaekNET").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_warning).setOngoing(true).build() else { @Suppress("DEPRECATION") val b=android.app.Notification.Builder(service); b.setContentTitle("FaekNET").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_warning).setOngoing(true).build() } } }

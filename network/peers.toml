@@ -1,4 +1,49 @@
-# Public bootstrap directory. Never put the shared key or credentials here.
-# Updated from validated GitHub issue requests by the peer-registry workflow.
+# Public bootstrap endpoints only. The shared PSK is never stored here.
+# These entries were manually seeded; replace owner with the real enrolled
+# GitHub login before enabling automated endpoint updates for these peers.
 schema_version = 1
-peers = []
+
+[[peers]]
+name = "Cainwo"
+virtual_ip = "10.66.0.2"
+public_ip = "5.44.174.16"
+public_port = 54321
+owner = "manual-seed"
+updated_at = 1789270586
+expires_at = 1789875386
+
+[[peers]]
+name = "phone"
+virtual_ip = "10.66.0.12"
+public_ip = "146.158.102.129"
+public_port = 34819
+owner = "manual-seed"
+updated_at = 1789270586
+expires_at = 1789875386
+
+[[peers]]
+name = "fazyameow-3"
+virtual_ip = "10.66.0.8"
+public_ip = "88.201.174.26"
+public_port = 14603
+owner = "manual-seed"
+updated_at = 1789270586
+expires_at = 1789875386
+
+[[peers]]
+name = "Cw"
+virtual_ip = "10.66.0.3"
+public_ip = "5.44.174.16"
+public_port = 54321
+owner = "manual-seed"
+updated_at = 1789270586
+expires_at = 1789875386
+
+[[peers]]
+name = "FaekServer"
+virtual_ip = "10.66.0.10"
+public_ip = "146.158.102.129"
+public_port = 1024
+owner = "manual-seed"
+updated_at = 1789270586
+expires_at = 1789875386

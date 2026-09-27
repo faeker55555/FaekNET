@@ -16,12 +16,19 @@ use crate::hosts;
 use crate::peer::{now_secs, Peer};
 use crate::proto;
 use crate::stun;
+use crate::warpfix;
 
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const GOSSIP_INTERVAL: Duration = Duration::from_secs(20);
 const SELF_STUN_INTERVAL: Duration = Duration::from_secs(25);
 const SELF_STUN_TIMEOUT: Duration = Duration::from_secs(2);
 const RECV_LOOP_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often to re-sync WARP split-tunnel exclusions (see warpfix.rs). This
+/// has to be periodic because the set of addresses we talk to is not fixed:
+/// gossip keeps introducing peers we never had in mesh.toml, and existing
+/// peers roam to new endpoints. Each tick is cheap (one `warp-cli status`
+/// + one `warp-cli tunnel ip list`, and only actual changes touch the list).
+const WARP_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(300);
 /// Sanity cap on total mesh size. Gossip only ever gets processed from
 /// packets that already passed AEAD authentication against the shared
 /// key, so this isn't a security boundary -- it just prevents a buggy or
@@ -282,6 +289,69 @@ the probed address may be the VPN's exit IP rather than your own.");
     let addr: SocketAddr = format!("0.0.0.0:{}", listen_port).parse().unwrap();
     socket.bind(&addr.into())?;
     Ok(socket)
+}
+
+/// Every public address we might currently send mesh UDP to: the configured
+/// peers' endpoints, our own manual public address (so peers sharing our WAN
+/// can hairpin through the router), and -- for the live peer table -- each
+/// peer's confirmed/roamed endpoint and LAN candidate. LAN candidates are
+/// filtered out again by warpfix's sanitizer (WARP never drops LAN-destined
+/// traffic, so they never need an exclusion).
+fn warp_split_tunnel_targets_config(config: &Config) -> Vec<Ipv4Addr> {
+    let mut ips = Vec::new();
+    if let Some(ip) = config
+        .me
+        .manual_public_ip
+        .as_deref()
+        .and_then(|s| s.parse::<Ipv4Addr>().ok())
+    {
+        ips.push(ip);
+    }
+    for p in &config.peers {
+        if let Ok(ip) = p.public_ip.parse::<Ipv4Addr>() {
+            ips.push(ip);
+        }
+    }
+    ips
+}
+
+/// Same, but including every live peer's current endpoint (roamed/gossiped
+/// addresses a fresh config read wouldn't have yet).
+fn warp_split_tunnel_targets(state: &MeshState) -> Vec<Ipv4Addr> {
+    let mut ips = warp_split_tunnel_targets_config(&state.config.lock().unwrap());
+    for p in state.peers.read().unwrap().values() {
+        if let Some(addr) = p.current_send_addr() {
+            if let std::net::IpAddr::V4(ip) = addr.ip() {
+                ips.push(ip);
+            }
+        }
+        if let Some(addr) = p.lan_candidate() {
+            if let std::net::IpAddr::V4(ip) = addr.ip() {
+                ips.push(ip);
+            }
+        }
+    }
+    ips
+}
+
+/// One round of WARP split-tunnel maintenance (see warpfix.rs for why this
+/// is needed at all): when `warp_compat` is on and a connected Cloudflare
+/// WARP client is detected, make sure every public address we talk to is in
+/// WARP's consumer split-tunnel exclude list -- otherwise warp-svc's
+/// anti-leak firewall silently drops the pinned socket's packets to those
+/// destinations, i.e. exactly the "WARP on -> can't connect to anyone, no
+/// errors anywhere" failure. Idempotent, add-only, fully logged, and a no-op
+/// unless both the warp_compat and warp_split_tunnel_auto gates are set.
+fn warp_maintenance_tick(state: &MeshState) {
+    let enabled = {
+        let cfg = state.config.lock().unwrap();
+        cfg.me.warp_compat && cfg.me.warp_split_tunnel_auto
+    };
+    if !enabled {
+        return;
+    }
+    let targets = warp_split_tunnel_targets(state);
+    warpfix::maybe_ensure_exclusions(true, &targets);
 }
 
 /// Applies IP_UNICAST_IF, the Windows equivalent of Linux's
@@ -1158,6 +1228,27 @@ On Windows this needs Administrator and wintun.dll next to the executable."
     // it -- see get_real_interface()'s doc comment for why that matters.
     let sock = create_udp_socket(listen_port, Some(my_virtual_ip), warp_compat)?;
     log(&format!("Listening on UDP 0.0.0.0:{}", listen_port));
+
+    // ---- Cloudflare WARP coexistence: split-tunnel exclusions ----
+    // warp-svc's anti-leak firewall drops the pinned socket's packets to any
+    // non-LAN destination that isn't in WARP's split-tunnel exclude list,
+    // which silently kills all mesh traffic to peers' public endpoints while
+    // WARP is connected (see warpfix.rs). Sync the list right away and then
+    // periodically, since gossip keeps introducing peers after startup --
+    // but always on this background thread, never inline on the caller's
+    // thread: in the GUI the caller is the UI thread, and a warp-cli call
+    // gone slow there is exactly the "application is not responding" recipe.
+    {
+        let state = state.clone();
+        thread::spawn(move || {
+            warp_maintenance_tick(&state);
+            loop {
+                thread::sleep(WARP_MAINTENANCE_INTERVAL);
+                warp_maintenance_tick(&state);
+            }
+        });
+    }
+
     let sock = Arc::new(sock);
     sock.set_read_timeout(Some(RECV_LOOP_TIMEOUT))?;
 
@@ -1647,6 +1738,13 @@ pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()
 
     let my_virtual_ip = config.me.virtual_ip;
     let sock = create_udp_socket(config.me.listen_port, Some(my_virtual_ip), config.me.warp_compat)?;
+    // Same WARP split-tunnel sync as the full mesh start: `ping` is the
+    // diagnostic people run when connectivity is broken, so it should also
+    // heal the most common WARP-related cause rather than just report loss.
+    if config.me.warp_compat && config.me.warp_split_tunnel_auto {
+        let targets = warp_split_tunnel_targets_config(&config);
+        warpfix::maybe_ensure_exclusions(true, &targets);
+    }
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 
     struct Stats {
@@ -1808,6 +1906,7 @@ mod tests {
                 manual_public_ip: None,
                 manual_public_port: None,
                 warp_compat: true,
+                warp_split_tunnel_auto: false,
                 cache_public_addr: false,
                 cached_public_ip: None,
                 cached_public_port: None,

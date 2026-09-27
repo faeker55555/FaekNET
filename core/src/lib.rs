@@ -15,3 +15,4 @@ pub mod peer;
 pub mod proto;
 pub mod share;
 pub mod stun;
+pub mod warpfix;

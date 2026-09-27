@@ -94,6 +94,20 @@ pub struct MeConfig {
     #[serde(default = "default_true")]
     pub warp_compat: bool,
 
+    /// When `warp_compat` is on and a connected Cloudflare WARP client is
+    /// detected (Linux), automatically add each public peer endpoint (and our
+    /// own manual public address) to WARP's consumer split-tunnel exclude
+    /// list via `warp-cli tunnel ip add`. Without this, warp-svc's anti-leak
+    /// firewall silently drops the mesh's pinned UDP traffic to any
+    /// non-LAN destination not on that list -- the "WARP on -> can't connect
+    /// to anyone, yet nothing errors" failure. The sync is idempotent and
+    /// add-only (never removes or modifies other entries), re-checks
+    /// periodically as gossip discovers new peers, and logs every change to
+    /// the mesh activity log. Set to false to manage the split-tunnel list
+    /// entirely by hand.
+    #[serde(default = "default_true")]
+    pub warp_split_tunnel_auto: bool,
+
     /// Whether to persist our own discovered (or manually entered) public
     /// ip:port to mesh.toml (`cached_public_ip`/`cached_public_port`
     /// below), so future launches have an immediately usable value
@@ -287,6 +301,7 @@ mod tests {
                 manual_public_ip: None,
                 manual_public_port: None,
                 warp_compat: true,
+                warp_split_tunnel_auto: false,
                 cache_public_addr: false,
                 cached_public_ip: None,
                 cached_public_port: None,

@@ -144,8 +144,24 @@ both configurable in `mesh.toml`:
   automatically by gossiping LAN-facing addresses and probing them in parallel; whichever path
   answers wins, no configuration needed.
 - **Always-on VPNs (Cloudflare WARP, ...)** — the mesh pins its socket to a real, non-VPN
-  interface (`warp_compat`, on by default). If self-STUN still never resolves on Windows with
-  no VPN active, try `meow-meow warp-compat off` or set your public address manually.
+  interface (`warp_compat`, on by default). **Cloudflare WARP on Linux has a second,
+  nastier trick:** its daemon installs an anti-leak firewall that *silently drops* any
+  traffic leaving via the real interface toward destinations not in its split-tunnel
+  exclude list — so even with correct pinning, every mesh datagram to a peer's public
+  endpoint vanishes while WARP is connected ("can't connect to anyone", no errors in the
+  log, while LAN/gateway traffic still works). To fix it without turning WARP off, the
+  mesh automatically keeps WARP's split-tunnel exclude list current (Linux, when
+  `warp-cli` is available): every public peer endpoint — plus gossip-discovered peers
+  as they appear — is added as a `/32` exclusion via `warp-cli tunnel ip add`, so mesh
+  traffic bypasses both the tunnel and the anti-leak drop while WARP stays on for
+  everything else. This is idempotent, add-only, and logged; disable it with
+  `warp_split_tunnel_auto = false` under `[me]` in `mesh.toml` and manage the list by
+  hand (`warp-cli tunnel ip list` / `warp-cli tunnel ip add <peer-ip>`). Note that with
+  WARP connected, self-STUN still can't see your real NAT mapping (the STUN servers
+  themselves are reached through the tunnel), so keep `manual_public_ip`/
+  `manual_public_port` set on WARP machines. On Windows, if self-STUN never resolves
+  with no VPN active, try `meow-meow warp-compat off` or set your public address
+  manually.
 - **NAT limitations** — symmetric NAT on *both* sides cannot be hole-punched (fundamental, not
   a bug); a relay would be required and is out of scope by design. IPv4 only. LAN broadcast is
   simulated at Layer 3, so games needing raw Ethernet frames are not supported.

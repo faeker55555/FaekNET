@@ -219,6 +219,7 @@ fn build_config(form: &crate::app_state::SetupForm) -> Result<Config, String> {
             manual_public_ip: None,
             manual_public_port: None,
             warp_compat: true,
+            warp_split_tunnel_auto: true,
             cache_public_addr: false,
             cached_public_ip: None,
             cached_public_port: None,

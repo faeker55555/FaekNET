@@ -166,6 +166,7 @@ fn cmd_init() {
             manual_public_ip: None,
             manual_public_port: None,
             warp_compat: true,
+            warp_split_tunnel_auto: true,
             cache_public_addr: false,
             cached_public_ip: None,
             cached_public_port: None,
@@ -235,11 +236,12 @@ fn cmd_export() {
     );
     // With WARP compatibility on (the default) the probe socket is pinned to
     // the real network interface so a VPN's exit IP isn't mistaken for yours.
-    let Some(addr) = if cfg.me.warp_compat {
+    let probe = if cfg.me.warp_compat {
         stun::discover_external_addr_any_pinned(cfg.me.listen_port, Some(cfg.me.virtual_ip))
     } else {
         stun::discover_external_addr_any(cfg.me.listen_port)
-    } else {
+    };
+    let Some(addr) = probe else {
         eprintln!(
             "Could not reach any STUN server -- check your internet connection, \
 or run `meow-meow myaddr` for more detail."
@@ -335,8 +337,8 @@ fn cmd_myaddr() {
     let mut results = std::collections::HashSet::new();
     for (host, port) in stun::DEFAULT_SERVERS {
         // With WARP compatibility on (the default), probe through a socket pinned
-        to the real network interface so an active VPN's exit IP isn't mistaken
-        for yours.
+        // to the real network interface so an active VPN's exit IP isn't mistaken
+        // for yours.
         let addr = if cfg.me.warp_compat {
             stun::discover_external_addr_pinned(cfg.me.listen_port, Some(cfg.me.virtual_ip), host, *port)
         } else {

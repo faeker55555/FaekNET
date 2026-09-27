@@ -52,6 +52,15 @@ pub struct AddPeerModal {
     pub error: Option<String>,
     pub my_card: Option<String>,
     pub card_error: Option<String>,
+    /// In-flight background STUN probe backing "generate my card" (see
+    /// `settings_screen::generate_my_card`). `Some(receiver)` while a worker
+    /// thread is probing; the UI thread polls `try_recv()` once per frame
+    /// and never blocks. The probe used to run synchronously on the UI
+    /// thread, where a walk through all STUN servers with no answers (e.g.
+    /// WARP connected, mesh stopped) stalls it for 30+ seconds -- long
+    /// enough for GNOME/Wayland to pop the "application is not responding"
+    /// prompt even though the app is fine.
+    pub card_probe: Option<std::sync::mpsc::Receiver<Option<std::net::SocketAddr>>>,
 }
 
 impl Default for AddPeerModal {
@@ -62,6 +71,7 @@ impl Default for AddPeerModal {
             error: None,
             my_card: None,
             card_error: None,
+            card_probe: None,
         }
     }
 }

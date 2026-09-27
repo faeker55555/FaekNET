@@ -11,6 +11,10 @@ use crate::app_state::{App, AppMode};
 use eframe::egui;
 
 pub fn draw(app: &mut App, ctx: &egui::Context) {
+    // Collect finished background work first (never blocks -- try_recv only),
+    // so e.g. a completed "generate my card" STUN probe shows up this frame.
+    settings_screen::poll_card_probe(app);
+
     match &app.mode {
         AppMode::Setup { .. } => setup_screen::draw(app, ctx),
         AppMode::Running { .. } | AppMode::Stopped { .. } => shell::draw(app, ctx),

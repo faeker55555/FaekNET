@@ -11,6 +11,15 @@ use crate::theme;
 /// STUN probe, which would otherwise fail: the mesh's UDP socket already
 /// owns `listen_port`, so a second, independent probe attempting to bind
 /// the same port is guaranteed to lose the race for it.
+///
+/// When no address is known yet, the STUN fallback runs on a worker thread
+/// (see `AddPeerModal::card_probe`): walking every server in
+/// `DEFAULT_SERVERS` with no answers can take 30+ seconds (3 s timeout each,
+/// and with WARP/a strict firewall it's common that *all* of them time out),
+/// and doing that on the UI thread froze the whole window -- long enough
+/// for GNOME/Wayland to pop the "application is not responding" prompt even
+/// though the app was perfectly healthy. The UI thread only ever touches
+/// the non-blocking channel; `poll_card_probe` below collects the result.
 pub fn generate_my_card(app: &mut App, cfg: &Config) {
     let known_addr = if let AppMode::Running { handle, .. } = &app.mode {
         handle.snapshot().my_public_addr
@@ -18,34 +27,99 @@ pub fn generate_my_card(app: &mut App, cfg: &Config) {
         None
     };
 
-    // With WARP compatibility on (the default), a fresh probe uses a socket pinned to the real network interface so an active VPN's exit IP isn't mistaken for yours.
-    let addr = known_addr.or_else(|| {
-        if cfg.me.warp_compat {
-            stun::discover_external_addr_any_pinned(cfg.me.listen_port, Some(cfg.me.virtual_ip))
-        } else {
-            stun::discover_external_addr_any(cfg.me.listen_port)
-        }
-    });
-
-    match addr {
-        Some(addr) => {
-            let card = meow_meow_core::share::encode(
-                &cfg.me.name,
-                cfg.me.virtual_ip,
-                &addr.ip().to_string(),
-                addr.port(),
-            );
-            app.add_peer_modal.my_card = Some(card);
-            app.add_peer_modal.card_error = None;
-        }
-        None => {
-            app.add_peer_modal.card_error = Some(
-                "Could not determine your public address yet -- if the mesh just started, \
-                 wait a few seconds for it to finish discovering it, then try again."
-                    .to_string(),
-            );
-        }
+    if let Some(addr) = known_addr {
+        build_card(app, cfg, addr);
+        return;
     }
+
+    // Already probing? Then a second click is a no-op (the button shows the
+    // probing note via card_error until the worker answers).
+    if app.add_peer_modal.card_probe.is_some() {
+        return;
+    }
+
+    let listen_port = cfg.me.listen_port;
+    let warp_compat = cfg.me.warp_compat;
+    let virtual_ip = cfg.me.virtual_ip;
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.add_peer_modal.card_probe = Some(rx);
+    app.add_peer_modal.my_card = None;
+    app.add_peer_modal.card_error = Some(
+        "Probing STUN servers for our public address in the background -- \
+         this can take a few seconds..."
+            .to_string(),
+    );
+    std::thread::Builder::new()
+        .name("card-stun-probe".into())
+        .spawn(move || {
+            // With WARP compatibility on (the default), the probe uses a
+            // socket pinned to the real network interface so an active
+            // VPN's exit IP is not mistaken for ours.
+            let addr = if warp_compat {
+                stun::discover_external_addr_any_pinned(listen_port, Some(virtual_ip))
+            } else {
+                stun::discover_external_addr_any(listen_port)
+            };
+            let _ = tx.send(addr);
+        })
+        .ok();
+    // If even the spawn failed (thread exhaustion), card_error stays on the
+    // probing note; the next click retries. Nothing on the UI path blocks.
+}
+
+/// Fill in `my_card` (or a friendly error) from a resolved public address.
+fn build_card(app: &mut App, cfg: &Config, addr: std::net::SocketAddr) {
+    let card = meow_meow_core::share::encode(
+        &cfg.me.name,
+        cfg.me.virtual_ip,
+        &addr.ip().to_string(),
+        addr.port(),
+    );
+    app.add_peer_modal.my_card = Some(card);
+    app.add_peer_modal.card_error = None;
+}
+
+/// Non-blocking per-frame collection of a finished "generate my card" STUN
+/// probe. Runs on the UI thread but only ever does a `try_recv()`.
+pub fn poll_card_probe(app: &mut App) {
+    let done = match &app.add_peer_modal.card_probe {
+        Some(rx) => match rx.try_recv() {
+            Ok(addr) => {
+                app.add_peer_modal.card_probe = None;
+                match addr {
+                    Some(addr) => match app.current_config() {
+                        Some(cfg) => build_card(app, &cfg, addr),
+                        None => {
+                            app.add_peer_modal.card_error = Some(
+                                "Public address found, but the config is no longer \
+                                 loaded."
+                                    .to_string(),
+                            )
+                        }
+                    },
+                    None => {
+                        app.add_peer_modal.card_error = Some(
+                            "Could not determine your public address yet -- if the mesh \
+                             just started, wait a few seconds for it to finish discovering \
+                             it, then try again."
+                                .to_string(),
+                        )
+                    }
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                app.add_peer_modal.card_probe = None;
+                app.add_peer_modal.card_error = Some(
+                    "Background probe failed unexpectedly -- try again.".to_string(),
+                );
+                true
+            }
+        },
+        None => false,
+    };
+    let _ = done;
 }
 
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {

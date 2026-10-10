@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "meow-meow_browser"
-version = "0.5.2"
+version = "0.56.0"
 dependencies = [
  "gtk",
  "meow-meow_core",
@@ -2371,14 +2371,14 @@ dependencies = [
 
 [[package]]
 name = "meow-meow_cli"
-version = "0.5.2"
+version = "0.56.0"
 dependencies = [
  "meow-meow_core",
 ]
 
 [[package]]
 name = "meow-meow_core"
-version = "0.5.2"
+version = "0.56.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "meow-meow_gui"
-version = "0.5.2"
+version = "0.56.0"
 dependencies = [
  "eframe",
  "egui",

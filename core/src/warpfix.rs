@@ -27,6 +27,20 @@
 //! else -- and every action is logged through the normal mesh log sink.
 //! Opt out with `warp_split_tunnel_auto = false` under `[me]` in mesh.toml.
 //!
+//! Peer endpoints are not the whole story, though. The mesh also has to reach
+//! the public STUN servers to learn its own reflexive address, and that probe
+//! runs from the *same* pinned socket -- so those datagrams are dropped by the
+//! same rule. Excluding only the peers leaves a mesh that can send to everyone
+//! it knows but advertises no address for anyone to reach it at, which presents
+//! as the original failure all over again. The STUN servers are therefore
+//! excluded too, by HOSTNAME (`warp-cli tunnel host add`) rather than by
+//! address: they are anycast/community servers whose A records rotate without
+//! notice, and WARP re-resolves an excluded hostname itself, so the exclusion
+//! cannot go stale. Clients too old to have `tunnel host` fall back to
+//! resolving the names locally and excluding the resulting /32s. Host
+//! exclusions are skipped entirely when a manual public address is configured,
+//! since self-STUN discovery is disabled in that case.
+//!
 //! On Windows, warp-cli's split-tunnel management is Zero-Trust/MDM territory
 //! and the client is usually not on PATH, so this module is a no-op there
 //! (Windows WARP doesn't drop same-host pinned traffic the way the Linux
@@ -69,17 +83,19 @@ pub enum SplitTunnelMode {
     Included,
 }
 
-/// Ensures WARP split-tunnel exclusions cover `targets`, gated on `enabled`
-/// and on a connected WARP client actually being present. No-op on
+/// Ensures WARP split-tunnel exclusions cover `targets` (addresses the mesh
+/// talks to) and `hosts` (hostnames, i.e. the STUN servers), gated on
+/// `enabled` and on a connected WARP client actually being present. No-op on
 /// non-Linux (see module docs for why Windows is left alone).
-pub(crate) fn maybe_ensure_exclusions(enabled: bool, targets: &[Ipv4Addr]) {
+pub(crate) fn maybe_ensure_exclusions(enabled: bool, targets: &[Ipv4Addr], hosts: &[&str]) {
     #[cfg(target_os = "linux")]
     if enabled && is_warp_connected() {
         ensure_split_tunnel_exclusions(targets);
+        ensure_split_tunnel_host_exclusions(hosts);
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (enabled, targets);
+        let _ = (enabled, targets, hosts);
     }
 }
 
@@ -256,6 +272,138 @@ warp-cli tunnel ip add {ip}"
     }
 }
 
+/// Extracts the hostnames already present in `warp-cli tunnel host list`
+/// output. Lines look like `  steamcommunity.com (CLI exclude)`; the leading
+/// `Excluded hosts:` header and any trailing annotation are ignored, and names
+/// are lowercased because DNS names are case-insensitive.
+fn parse_listed_hosts(output: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for line in output.lines() {
+        let Some(tok) = line.split_whitespace().next() else {
+            continue;
+        };
+        // skip the "Excluded hosts:" header and any "(CLI exclude)" annotation
+        if tok.ends_with(':') || tok.starts_with('(') || !tok.contains('.') {
+            continue;
+        }
+        found.push(tok.to_ascii_lowercase());
+    }
+    found
+}
+
+/// Ensures every hostname in `hosts` has a WARP split-tunnel exclusion, so
+/// traffic to whatever addresses those names currently resolve to bypasses the
+/// tunnel and its anti-leak drop. This is what keeps self-STUN discovery
+/// working while WARP is connected -- see the module docs for why hostnames and
+/// not addresses.
+///
+/// Idempotent and add-only, exactly like [`ensure_split_tunnel_exclusions`]:
+/// names already listed are skipped silently so the periodic re-check produces
+/// no log spam, and nothing is ever removed.
+pub fn ensure_split_tunnel_host_exclusions(hosts: &[&str]) {
+    if hosts.is_empty() {
+        return;
+    }
+
+    let Some(list_out) = run_cli(&["tunnel", "host", "list"]) else {
+        host_exclusion_fallback(hosts, "'warp-cli' could not be executed");
+        return;
+    };
+    if !list_out.status.success() {
+        host_exclusion_fallback(
+            hosts,
+            &format!(
+                "reading its split-tunnel host list failed (exit {:?}) -- this \
+client may predate 'warp-cli tunnel host'",
+                list_out.status.code()
+            ),
+        );
+        return;
+    }
+    let list_text = String::from_utf8_lossy(&list_out.stdout).to_string();
+    match parse_list_mode(&list_text) {
+        Some(SplitTunnelMode::Excluded) => {} // the mode we can help in
+        Some(SplitTunnelMode::Included) => {
+            log(
+                "Cloudflare WARP detected, but its split-tunnel list is include-mode \
+(usually Zero-Trust managed) -- skipping automatic STUN host exclusions. Self-STUN \
+discovery must be allowed by your organization's split-tunnel policy.",
+            );
+            return;
+        }
+        None => {
+            host_exclusion_fallback(hosts, "its split-tunnel host list output was unrecognized");
+            return;
+        }
+    }
+
+    let listed = parse_listed_hosts(&list_text);
+    let mut added = 0usize;
+    let mut failed = 0usize;
+    for host in hosts {
+        if listed.contains(&host.to_ascii_lowercase()) {
+            continue;
+        }
+        match run_cli(&["tunnel", "host", "add", host]) {
+            Some(out) if out.status.success() => {
+                added += 1;
+                log(&format!(
+                    "WARP split-tunnel: added host exclusion for {host} -- traffic to \
+whatever addresses it resolves to now bypasses the WARP tunnel (and its anti-leak \
+drop), so self-STUN discovery keeps working. WARP itself stays connected."
+                ));
+            }
+            other => {
+                failed += 1;
+                let why = match other {
+                    Some(out) => format!("exit status {:?}", out.status.code()),
+                    None => "warp-cli not executable".to_string(),
+                };
+                log(&format!(
+                    "WARP split-tunnel: could not exclude host {host} ({why}). If self-STUN \
+discovery fails while WARP is connected, run manually: warp-cli tunnel host add {host}"
+                ));
+            }
+        }
+    }
+    if added > 0 || failed > 0 {
+        log(&format!(
+            "WARP split-tunnel host sync finished: {added} added, {failed} failed, {} already present.",
+            listed.len()
+        ));
+    }
+}
+
+/// Fallback for clients with no `warp-cli tunnel host` subcommand: resolve the
+/// names here and exclude the resulting addresses instead, so the sync still
+/// helps. Resolved the same way the STUN probe resolves them, so what we
+/// exclude is what the mesh will actually contact. Best-effort throughout -- a
+/// name that does not resolve is simply skipped.
+fn host_exclusion_fallback(hosts: &[&str], reason: &str) {
+    use std::net::ToSocketAddrs;
+
+    let mut ips: Vec<Ipv4Addr> = Vec::new();
+    for host in hosts {
+        let Ok(addrs) = (*host, 0u16).to_socket_addrs() else {
+            continue;
+        };
+        for a in addrs {
+            if let std::net::IpAddr::V4(ip) = a.ip() {
+                ips.push(ip);
+            }
+        }
+    }
+    log(&format!(
+        "Cloudflare WARP detected, but {reason} -- falling back to excluding the {} \
+resolved STUN address(es) instead of the hostnames. Those can go stale if a server's \
+address changes; upgrading the WARP client restores hostname-based exclusions.",
+        ips.len()
+    ));
+    if !ips.is_empty() {
+        ensure_split_tunnel_exclusions(&ips);
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn make_cli(args: &[&str]) -> Option<std::process::Command> {
     let mut cmd = std::process::Command::new(WARP_CLI);
@@ -325,6 +473,54 @@ mod tests {
 
     fn ip(s: &str) -> Ipv4Addr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn listed_host_parsing_skips_header_and_annotations() {
+        let out = "Excluded hosts:\n  steamcommunity.com (CLI exclude)\n  stun.l.google.com\n\n";
+        assert_eq!(
+            parse_listed_hosts(out),
+            vec![
+                "steamcommunity.com".to_string(),
+                "stun.l.google.com".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn listed_host_parsing_is_case_insensitive() {
+        let hosts = parse_listed_hosts("Excluded hosts:\n  STUN.L.Google.COM (CLI exclude)\n");
+        assert!(hosts.contains(&"stun.l.google.com".to_string()));
+    }
+
+    #[test]
+    fn listed_host_parsing_survives_junk() {
+        assert!(parse_listed_hosts("").is_empty());
+        assert!(parse_listed_hosts("garbage without dots").is_empty());
+        assert!(parse_listed_hosts("Excluded hosts:").is_empty());
+        // an annotation must not be mistaken for a hostname
+        assert!(parse_listed_hosts("Excluded hosts:\n  (CLI exclude)\n").is_empty());
+    }
+
+    #[test]
+    fn host_list_direction_is_detected() {
+        assert_eq!(
+            parse_list_mode("Excluded hosts:\n  a.example.com\n"),
+            Some(SplitTunnelMode::Excluded)
+        );
+        assert_eq!(
+            parse_list_mode("Included hosts:\n  a.example.com\n"),
+            Some(SplitTunnelMode::Included)
+        );
+    }
+
+    #[test]
+    fn stun_hosts_belong_on_the_hostname_path() {
+        // none of them may be an address literal, which would have to go down
+        // the IP path instead
+        for h in crate::stun::default_server_hosts() {
+            assert!(h.parse::<Ipv4Addr>().is_err(), "{h} is an IP literal");
+        }
     }
 
     #[test]

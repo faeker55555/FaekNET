@@ -1,9 +1,14 @@
-// Minimal RFC 5389 STUN Binding Request client, used only to help the user
-// discover their own external ip:port for a given local port -- exactly
-// the same technique used to diagnose the CGNAT port-remapping issue
-// earlier. This is purely a discovery aid for the user to fill in the
-// peer's config; the mesh's actual data path never depends on a STUN
-// server at runtime.
+// Minimal RFC 5389 STUN Binding Request client, used to discover our own
+// external ip:port for a given local port -- exactly the same technique used
+// to diagnose the CGNAT port-remapping issue earlier.
+//
+// The mesh's *data path* never depends on a STUN server: peer traffic is
+// direct. Public-address discovery, however, runs continuously while the mesh
+// is up (see `self_stun_probe` in mesh.rs) unless a manual public address is
+// configured -- so these servers being *reachable* is a live runtime
+// requirement. That is why `warpfix` keeps them out of Cloudflare WARP's
+// tunnel: a dropped STUN probe means no public address to advertise, so peers
+// cannot reach us even though the mesh itself is perfectly healthy.
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -37,6 +42,24 @@ pub const DEFAULT_SERVERS: &[(&str, u16)] = &[
     ("stun.sipnet.ru", 3478),
     ("stun.miwifi.com", 3478),
 ];
+
+/// The deduplicated hostnames of [`DEFAULT_SERVERS`], without ports.
+///
+/// For callers that need the STUN servers to be *reachable* rather than merely
+/// listed -- notably the WARP split-tunnel sync in `warpfix.rs`. Hostnames
+/// rather than resolved addresses on purpose: these are anycast and community
+/// servers whose A records rotate without notice, and WARP re-resolves an
+/// excluded hostname itself, so a hostname exclusion cannot go stale the way a
+/// pinned `/32` would.
+pub fn default_server_hosts() -> Vec<&'static str> {
+    let mut hosts: Vec<&'static str> = Vec::new();
+    for (host, _) in DEFAULT_SERVERS {
+        if !hosts.contains(host) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
 
 fn build_request(tx_id: &[u8; 12]) -> [u8; 20] {
     let mut buf = [0u8; 20];
@@ -214,4 +237,37 @@ pub fn discover_external_addr_any_pinned(local_port: u16, my_virtual_ip: Option<
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_server_hosts_is_deduped_and_covers_every_server() {
+        let hosts = default_server_hosts();
+        let mut distinct: Vec<&str> = Vec::new();
+        for (h, _) in DEFAULT_SERVERS {
+            if !distinct.contains(h) {
+                distinct.push(h);
+            }
+        }
+        assert_eq!(hosts, distinct);
+        assert!(!hosts.is_empty());
+        assert!(hosts.iter().all(|h| h.contains('.') && !h.contains(':')));
+    }
+
+    #[test]
+    fn default_server_hosts_are_names_not_literals() {
+        // A literal IP would belong on the address path in warpfix, not the
+        // hostname path, and a private/loopback name would be useless for
+        // discovering a public reflexive address.
+        for host in default_server_hosts() {
+            assert!(
+                host.parse::<std::net::Ipv4Addr>().is_err(),
+                "{host} is an IP literal, not a name"
+            );
+            assert!(!host.starts_with("localhost"), "unexpected host {host}");
+        }
+    }
 }

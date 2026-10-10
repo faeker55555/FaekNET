@@ -334,6 +334,26 @@ fn warp_split_tunnel_targets(state: &MeshState) -> Vec<Ipv4Addr> {
     ips
 }
 
+/// Hostnames that need a WARP split-tunnel exclusion alongside the addresses
+/// from [`warp_split_tunnel_targets_config`]: the public STUN servers.
+///
+/// Without these the mesh can still *send* to every peer it knows, but its own
+/// reflexive-address probe is dropped by WARP's anti-leak rule, so it has no
+/// public address to advertise and nobody can reach it -- which presents as the
+/// exact same "WARP on -> can't connect to anyone, no errors anywhere" failure
+/// the address exclusions were added to fix.
+///
+/// Empty when a manual public address is configured, because self-STUN
+/// discovery is disabled in that case and there is no reason to add eleven
+/// hostnames to the user's split-tunnel config for a code path that will not
+/// run.
+fn warp_split_tunnel_hosts(config: &Config) -> Vec<&'static str> {
+    if config.manual_public_addr().is_some() {
+        return Vec::new();
+    }
+    stun::default_server_hosts()
+}
+
 /// One round of WARP split-tunnel maintenance (see warpfix.rs for why this
 /// is needed at all): when `warp_compat` is on and a connected Cloudflare
 /// WARP client is detected, make sure every public address we talk to is in
@@ -342,6 +362,9 @@ fn warp_split_tunnel_targets(state: &MeshState) -> Vec<Ipv4Addr> {
 /// destinations, i.e. exactly the "WARP on -> can't connect to anyone, no
 /// errors anywhere" failure. Idempotent, add-only, fully logged, and a no-op
 /// unless both the warp_compat and warp_split_tunnel_auto gates are set.
+///
+/// Covers the STUN servers as well as peer endpoints -- see
+/// [`warp_split_tunnel_hosts`] for why excluding only the peers is not enough.
 fn warp_maintenance_tick(state: &MeshState) {
     let enabled = {
         let cfg = state.config.lock().unwrap();
@@ -351,7 +374,13 @@ fn warp_maintenance_tick(state: &MeshState) {
         return;
     }
     let targets = warp_split_tunnel_targets(state);
-    warpfix::maybe_ensure_exclusions(true, &targets);
+    // Scoped so the config lock is dropped before warpfix shells out to
+    // warp-cli, which can block for seconds when warp-svc is busy.
+    let hosts = {
+        let cfg = state.config.lock().unwrap();
+        warp_split_tunnel_hosts(&cfg)
+    };
+    warpfix::maybe_ensure_exclusions(true, &targets, &hosts);
 }
 
 /// Applies IP_UNICAST_IF, the Windows equivalent of Linux's
@@ -1743,7 +1772,8 @@ pub fn ping(config: Config, count: u32, timeout: Duration) -> std::io::Result<()
     // heal the most common WARP-related cause rather than just report loss.
     if config.me.warp_compat && config.me.warp_split_tunnel_auto {
         let targets = warp_split_tunnel_targets_config(&config);
-        warpfix::maybe_ensure_exclusions(true, &targets);
+        let hosts = warp_split_tunnel_hosts(&config);
+        warpfix::maybe_ensure_exclusions(true, &targets, &hosts);
     }
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
 

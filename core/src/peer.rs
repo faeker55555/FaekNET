@@ -65,6 +65,8 @@ pub struct Peer {
     /// separate "prefer LAN" logic is needed, direct observation already
     /// always wins.
     lan_candidate: RwLock<Option<SocketAddr>>,
+    /// GitHub endpoint hint: probe it, but never promote it without authenticated traffic.
+    registry_candidate: RwLock<Option<SocketAddr>>,
 }
 
 impl Peer {
@@ -81,6 +83,7 @@ impl Peer {
             pending_pings: Mutex::new(std::collections::HashMap::new()),
             services: RwLock::new(Vec::new()),
             lan_candidate: RwLock::new(None),
+            registry_candidate: RwLock::new(None),
         }
     }
 
@@ -101,6 +104,7 @@ impl Peer {
             pending_pings: Mutex::new(std::collections::HashMap::new()),
             services: RwLock::new(Vec::new()),
             lan_candidate: RwLock::new(None),
+            registry_candidate: RwLock::new(None),
         }
     }
 
@@ -126,6 +130,14 @@ impl Peer {
             .to_socket_addrs()
             .ok()
             .and_then(|mut it| it.next())
+    }
+
+    pub fn registry_candidate(&self) -> Option<SocketAddr> {
+        *self.registry_candidate.read().unwrap()
+    }
+
+    pub fn set_registry_candidate(&self, addr: Option<SocketAddr>) {
+        *self.registry_candidate.write().unwrap() = addr;
     }
 
     pub fn confirmed_epoch(&self) -> u32 {
@@ -264,6 +276,24 @@ mod tests {
             public_ip: "203.0.113.1".to_string(),
             public_port: 12345,
         })
+    }
+
+    #[test]
+    fn registry_hint_does_not_replace_an_authenticated_endpoint() {
+        let p = dummy_peer();
+        let old: SocketAddr = "8.8.8.8:54321".parse().unwrap();
+        let new: SocketAddr = "1.1.1.1:60000".parse().unwrap();
+        p.observe(old);
+        let epoch = p.confirmed_epoch();
+        p.set_registry_candidate(Some(new));
+        assert_eq!(p.current_send_addr(), Some(old));
+        assert_eq!(p.confirmed_epoch(), epoch);
+        assert_eq!(p.registry_candidate(), Some(new));
+        // The receive path calls observe only after AEAD authentication.
+        p.observe(new);
+        assert_eq!(p.current_send_addr(), Some(new));
+        p.set_registry_candidate(None);
+        assert_eq!(p.current_send_addr(), Some(new));
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub mod logsink;
 pub mod mesh;
 pub mod peer;
 pub mod proto;
+pub mod registry;
 pub mod share;
 pub mod stun;
 pub mod warpfix;

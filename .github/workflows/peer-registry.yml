@@ -1,0 +1,36 @@
+name: Update peer directory
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  register:
+    if: github.event.issue.title == '[FaekNET registry] endpoint update'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # Never check out a request author's branch or run request-provided code.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate and publish with compare-and-swap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/registry/update.py --publish
+      - name: Close accepted request
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: gh issue close "$ISSUE_NUMBER" --comment 'Endpoint accepted into the public peer directory. Clients refresh periodically. The private network key is still required to connect.'

@@ -11,6 +11,7 @@ use meow_meow_core::mesh::DomainNameEntry;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
+use super::components::section;
 
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -343,16 +344,4 @@ fn mechanism_row(ui: &mut egui::Ui, label: &str, enabled: bool, detail: &str) {
     });
     ui.label(egui::RichText::new(detail).color(theme::TEXT_DIM).size(10.5));
     ui.add_space(8.0);
-}
-
-fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(theme::BG_PANEL)
-        .stroke(egui::Stroke::new(1.0f32, theme::LINE))
-        .inner_margin(egui::Margin::same(16))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(title).color(theme::TEXT_DIM).size(11.0).strong());
-            ui.add_space(10.0);
-            body(ui);
-        });
 }

@@ -14,9 +14,10 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
         return;
     };
 
+    let list_width = (ui.available_width() * 0.42).clamp(180.0, 320.0);
     egui::SidePanel::left("peer_list_panel")
         .resizable(false)
-        .exact_width(320.0)
+        .exact_width(list_width)
         .frame(
             egui::Frame::new()
                 .fill(theme::BG_PANEL)
@@ -37,9 +38,9 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
                     });
                 }
 
-                for peer in snapshot.peers.clone() {
+                for peer in &snapshot.peers {
                     let is_selected = *selected_peer == Some(peer.virtual_ip);
-                    draw_peer_row(ui, &peer, is_selected, || {
+                    draw_peer_row(ui, peer, is_selected, || {
                         *selected_peer = Some(peer.virtual_ip);
                     });
                 }
@@ -50,7 +51,10 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().inner_margin(egui::Margin::same(20)))
         .show_inside(ui, |ui| {
-            let sel = selected_peer.or_else(|| snapshot.peers.first().map(|p| p.virtual_ip));
+            if !snapshot.peers.iter().any(|peer| Some(peer.virtual_ip) == *selected_peer) {
+                *selected_peer = snapshot.peers.first().map(|peer| peer.virtual_ip);
+            }
+            let sel = *selected_peer;
             match sel.and_then(|ip| snapshot.peers.iter().find(|p| p.virtual_ip == ip)) {
                 Some(peer) => draw_peer_detail(ui, peer),
                 None => {
@@ -164,7 +168,7 @@ fn draw_peer_detail(ui: &mut egui::Ui, peer: &meow_meow_core::mesh::PeerSnapshot
             }, theme::status_color(peer.seconds_since_seen));
             detail_row(
                 ui,
-                "PUBLIC ADDRESS",
+                "CURRENT ENDPOINT",
                 peer.addr.map(|a| a.to_string()).unwrap_or_else(|| "unresolved".to_string()),
                 theme::TEXT_BRIGHT,
             );

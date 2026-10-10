@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::app_state::{App, AppMode};
 use crate::theme;
+use super::components::section as section_frame;
 
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -18,6 +19,8 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn draw_content(app: &mut App, ui: &mut egui::Ui) {
+    ui.heading("Network");
+    ui.add_space(18.0);
     match &app.mode {
         AppMode::Running { snapshot, .. } => {
             draw_stat_grid(ui, snapshot);
@@ -40,18 +43,6 @@ fn draw_content(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn section_frame(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(theme::BG_PANEL)
-        .stroke(egui::Stroke::new(1.0f32, theme::LINE))
-        .inner_margin(egui::Margin::same(16))
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(title).color(theme::TEXT_DIM).size(11.0).strong());
-            ui.add_space(10.0);
-            body(ui);
-        });
-}
-
 fn draw_stat_grid(ui: &mut egui::Ui, snapshot: &meow_meow_core::mesh::MeshSnapshot) {
     let online = snapshot
         .peers
@@ -64,28 +55,40 @@ fn draw_stat_grid(ui: &mut egui::Ui, snapshot: &meow_meow_core::mesh::MeshSnapsh
         .map(|a| a.to_string())
         .unwrap_or_else(|| "resolving...".to_string());
 
-    ui.columns(4, |cols| {
-        stat_box(&mut cols[0], "PEERS ONLINE", &format!("{online} / {}", snapshot.peers.len()), theme::TEAL);
-        stat_box(&mut cols[1], "PUBLIC ADDRESS", &public_addr, theme::TEXT_BRIGHT);
-        stat_box(&mut cols[2], "LISTEN PORT", &snapshot.listen_port.to_string(), theme::TEXT_BRIGHT);
-        stat_box(&mut cols[3], "AUTO-DISCOVERED", &discovered.to_string(), theme::AMBER);
-    });
+    let cards = [
+        ("Peers online", format!("{online} / {}", snapshot.peers.len()), theme::TEAL),
+        ("Public endpoint", public_addr, theme::TEXT_BRIGHT),
+        ("Virtual address", snapshot.my_virtual_ip.to_string(), theme::TEXT_BRIGHT),
+        ("Auto-discovered", discovered.to_string(), theme::TEAL),
+    ];
+    // Two columns on smaller windows keep addresses legible instead of clipping.
+    let columns = if ui.available_width() >= 1000.0 { 4 } else { 2 };
+    for row in cards.chunks(columns) {
+        ui.columns(columns, |cols| {
+            for (col, (label, value, color)) in cols.iter_mut().zip(row) {
+                stat_box(col, label, value, *color);
+            }
+        });
+        ui.add_space(10.0);
+    }
 }
 
 fn stat_box(ui: &mut egui::Ui, label: &str, value: &str, value_color: egui::Color32) {
     egui::Frame::new()
-        .fill(theme::BG_ELEVATED)
+        .fill(theme::BG_PANEL)
+        .corner_radius(10)
         .stroke(egui::Stroke::new(1.0f32, theme::LINE))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
-            ui.set_min_height(60.0);
-            ui.label(egui::RichText::new(label).color(theme::TEXT_DIM).size(10.5));
-            ui.add_space(4.0);
+            ui.set_min_width(ui.available_width());
+            ui.set_min_height(76.0);
+            ui.label(egui::RichText::new(label).color(theme::TEXT_DIM).size(12.0));
+            ui.add_space(12.0);
             ui.label(
                 egui::RichText::new(value)
                     .color(value_color)
                     .monospace()
-                    .size(16.0)
+                    .size(21.0)
                     .strong(),
             );
         });
@@ -95,12 +98,22 @@ fn stat_box(ui: &mut egui::Ui, label: &str, value: &str, value_color: egui::Colo
 /// around it, colored by liveness, with a dashed line marking
 /// gossip-auto-discovered peers vs. a solid line for manually-added ones.
 fn draw_mesh_map(ui: &mut egui::Ui, snapshot: &meow_meow_core::mesh::MeshSnapshot) {
-    section_frame(ui, "MESH TOPOLOGY", |ui| {
-        let height = 260.0;
+    section_frame(ui, "Graph", |ui| {
+        let height = 340.0;
         let (rect, _response) =
             ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, theme::BG_ELEVATED);
+        painter.rect_filled(rect, 8.0, theme::BG_DEEP);
+        // Quiet dot grid provides structure without competing with the paths.
+        let mut x = rect.left() + 12.0;
+        while x < rect.right() {
+            let mut y = rect.top() + 12.0;
+            while y < rect.bottom() {
+                painter.circle_filled(egui::pos2(x, y), 0.6, theme::LINE_BRIGHT);
+                y += 20.0;
+            }
+            x += 20.0;
+        }
 
         let center = rect.center();
         let n = snapshot.peers.len().max(1);
@@ -120,6 +133,21 @@ fn draw_mesh_map(ui: &mut egui::Ui, snapshot: &meow_meow_core::mesh::MeshSnapsho
                 draw_dashed_line(&painter, center, pos, stroke);
             } else {
                 painter.line_segment([center, pos], stroke);
+            }
+            if let Some(rtt) = peer.rtt_ms {
+                let midpoint = center + (pos - center) * 0.52;
+                painter.rect_filled(
+                    egui::Rect::from_center_size(midpoint, egui::vec2(42.0, 16.0)),
+                    4.0,
+                    theme::BG_PANEL,
+                );
+                painter.text(
+                    midpoint,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{rtt} ms"),
+                    egui::FontId::monospace(9.0),
+                    theme::TEXT_DIM,
+                );
             }
         }
 

@@ -1,0 +1,7 @@
+# Enrollment: one GitHub login per virtual IP. Share the mesh key privately.
+# Add participants here before enabling their automatic endpoint publisher.
+# For multiple devices, assign multiple IPs to the same login.
+schema_version = 1
+
+[members]
+# example-login = ["10.66.0.2", "10.66.0.3"]

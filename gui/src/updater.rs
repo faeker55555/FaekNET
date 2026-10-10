@@ -616,7 +616,7 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
         .map(|p| p.to_path_buf())
         .ok_or_else(|| "executable has no parent directory".to_string())?;
 
-    let mut names: Vec<(String, Option<String>)> = vec![
+    let names: Vec<(String, Option<String>)> = vec![
         ("meow-meow_gui", Some("lan_mesh_gui")),
         ("meow-meow", Some("lan_mesh")),
         ("meow-meow_browser", Some("lan_mesh_browser")),
@@ -624,16 +624,23 @@ fn staged_replacements(payload_dir: &Path) -> Result<Vec<(PathBuf, PathBuf)>, St
     .into_iter()
     .map(|(n, old)| (n.to_string(), old.map(String::from)))
     .collect();
+    // Windows-only: the binaries carry a `.exe` suffix, and the package also
+    // bundles wintun.dll next to them (the driver the virtual adapter needs),
+    // which is replaced in place like everything else. Shadowing an immutable
+    // binding keeps `mut` off the declaration shared with other platforms,
+    // where nothing mutates it and the compiler would warn about it.
     #[cfg(target_os = "windows")]
-    {
+    let names = {
+        let mut names = names;
         for (name, old) in &mut names {
             name.push_str(".exe");
             if let Some(o) = old {
                 o.push_str(".exe");
             }
         }
-        names.push(("wintun.dll", None));
-    }
+        names.push(("wintun.dll".to_string(), None));
+        names
+    };
 
     let mut pairs = Vec::new();
     for (name, old_name) in names {

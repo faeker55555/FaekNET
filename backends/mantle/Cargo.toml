@@ -1,0 +1,9 @@
+[package]
+name = "meow-meow_backend_mantle"
+version = "0.56.0"
+edition = "2021"
+description = "MantleDB (https://mantledb.sh) storage adapter for the FaekNET peer directory"
+
+[dependencies]
+meow-meow_core = { path = "../../core" }
+serde_json = "1"

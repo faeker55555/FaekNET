@@ -48,6 +48,9 @@ self-STUN so the mesh recovers automatically after NAT reassignments.
 Download the package for your OS from [GitHub Releases](https://github.com/faeker55555/FaekNET/releases)
 (Linux `.tar.gz`, Windows `.zip` — the Windows package includes `wintun.dll`), extract it, and
 use the bundled `run-gui.*` / `run-cli.*` scripts, which handle root/Administrator elevation.
+On Windows you can instead run `meow-meow-<version>-setup.exe`: a wizard that installs to
+Program Files, adds Start Menu entries, optional desktop shortcut and firewall rules, and an
+uninstaller. It keeps your `mesh.toml` on uninstall unless you choose to delete it.
 Or build from source:
 
 ```sh

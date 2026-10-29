@@ -121,6 +121,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mingw-w64
 
+      - name: Install NSIS (Windows installer compiler)
+        run: sudo apt-get install -y nsis
+
       - name: Configure Windows linker
         run: |
           mkdir -p .cargo
@@ -159,12 +162,33 @@ jobs:
           zip -qr "${OUT}.zip" "${OUT}"
           sha256sum "${OUT}.zip" > "${OUT}.zip.sha256"
 
+      - name: Build Windows installer (setup .exe)
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME:-dev}"
+          OUT="lan_mesh-${TAG}-windows-x86_64"
+          # NSIS version resources need plain x.y.z; take it from the CLI crate.
+          NUM_VERSION="$(sed -n 's/^version = "\([0-9.]*\)"$/\1/p' cli/Cargo.toml | head -1)"
+          test -n "$NUM_VERSION"
+          case "$NUM_VERSION" in
+            *.*.*) ;;
+            *) echo "Unexpected version: $NUM_VERSION"; exit 1 ;;
+          esac
+          makensis -WX \
+            -DSTAGE="$GITHUB_WORKSPACE/dist/${OUT}" \
+            -DVERSION="$NUM_VERSION" \
+            -DOUTFILE="$GITHUB_WORKSPACE/dist/meow-meow-${TAG}-setup.exe" \
+            scripts/windows/installer.nsi
+          cd dist
+          sha256sum "meow-meow-${TAG}-setup.exe" > "meow-meow-${TAG}-setup.exe.sha256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: windows-package
           path: |
             dist/*.zip
             dist/*.sha256
+            dist/*.exe
 
   build-android:
     name: Build (Android APK)
@@ -238,5 +262,7 @@ jobs:
             dist/*.tar.gz.sha256
             dist/*.zip
             dist/*.zip.sha256
+            dist/*.exe
+            dist/*.exe.sha256
             dist/android/*.apk
           generate_release_notes: true

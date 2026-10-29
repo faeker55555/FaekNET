@@ -12,7 +12,7 @@
 // around that without a rendezvous/relay server, which is explicitly out
 // of scope for this project. Gossip is what eliminates every exchange
 // *after* that first one.
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 /// Cap on how many entries go in a single gossip packet, to keep packets
 /// comfortably under typical MTUs even with longer names. If the mesh ever
@@ -124,25 +124,42 @@ pub fn build_payloads(entries: &[GossipEntry]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Longest prefix of `s` that is at most `max` bytes and ends on a UTF-8
+/// character boundary, so truncation never produces invalid text.
+fn truncate_utf8(s: &str, max: usize) -> &[u8] {
+    if s.len() <= max {
+        return s.as_bytes();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s.as_bytes()[..end]
+}
+
 fn build_single_payload(entries: &[GossipEntry]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + entries.len() * (18 + MAX_NAME_LEN + MAX_SERVICE_NAME_LEN));
-    out.push(entries.len().min(255) as u8);
-    for entry in entries.iter().take(255) {
-        let SocketAddr::V4(v4) = entry.addr else {
-            continue; // IPv6 peer addresses aren't supported; skip.
-        };
+    // Filter first so the count byte always matches the entries written.
+    let v4: Vec<(&GossipEntry, SocketAddrV4)> = entries
+        .iter()
+        .filter_map(|e| match e.addr {
+            SocketAddr::V4(v4) => Some((e, v4)), // IPv6 peer addresses aren't supported; skip.
+            _ => None,
+        })
+        .take(255)
+        .collect();
+    let mut out = Vec::with_capacity(1 + v4.len() * (18 + MAX_NAME_LEN + MAX_SERVICE_NAME_LEN));
+    out.push(v4.len() as u8);
+    for (entry, v4) in v4 {
         out.extend_from_slice(&entry.virtual_ip.octets());
-        let name_bytes = entry.name.as_bytes();
-        let name_len = name_bytes.len().min(MAX_NAME_LEN);
-        out.push(name_len as u8);
-        out.extend_from_slice(&name_bytes[..name_len]);
+        let name_bytes = truncate_utf8(&entry.name, MAX_NAME_LEN);
+        out.push(name_bytes.len() as u8);
+        out.extend_from_slice(name_bytes);
         out.extend_from_slice(&v4.ip().octets());
         out.extend_from_slice(&v4.port().to_be_bytes());
         out.extend_from_slice(&entry.epoch_secs.to_be_bytes());
-        let service_bytes = entry.service_name.as_bytes();
-        let service_len = service_bytes.len().min(MAX_SERVICE_NAME_LEN);
-        out.push(service_len as u8);
-        out.extend_from_slice(&service_bytes[..service_len]);
+        let service_bytes = truncate_utf8(&entry.service_name, MAX_SERVICE_NAME_LEN);
+        out.push(service_bytes.len() as u8);
+        out.extend_from_slice(service_bytes);
         out.extend_from_slice(&entry.service_port.to_be_bytes());
         // Optional LAN candidate: a 1-byte presence flag followed by 6
         // bytes (IPv4 + port) if present, 0 bytes otherwise. Appended
@@ -407,5 +424,37 @@ mod tests {
         let payloads = build_payloads(&entries);
         let parsed = parse_payload(&payloads[0]);
         assert_eq!(parsed[0].service_name.len(), MAX_SERVICE_NAME_LEN);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn count_byte_matches_entries_written_when_ipv6_is_skipped() {
+        let v4: SocketAddr = "203.0.113.5:4000".parse().unwrap();
+        let v6: SocketAddr = "[::1]:1".parse().unwrap();
+        let ip = Ipv4Addr::new(10, 66, 0, 9);
+        let entries = vec![
+            GossipEntry::peer(ip, "first", v4, 1),
+            GossipEntry::peer(ip, "skipped", v6, 1),
+            GossipEntry::peer(Ipv4Addr::new(10, 66, 0, 10), "third", v4, 1),
+        ];
+        let payload = build_payloads(&entries).remove(0);
+        assert_eq!(payload[0], 2, "count byte must equal entries actually written");
+        let parsed = parse_payload(&payload);
+        let names: Vec<_> = parsed.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["first", "third"]);
+    }
+
+    #[test]
+    fn long_names_truncate_on_char_boundary() {
+        let v4: SocketAddr = "203.0.113.5:4000".parse().unwrap();
+        // 31 ASCII bytes then a 3-byte char: a naive 32-byte cut would split it.
+        let long = format!("{}€€", "a".repeat(31));
+        let payload = build_payloads(&[GossipEntry::peer(Ipv4Addr::new(10, 66, 0, 9), long, v4, 1)]).remove(0);
+        let parsed = parse_payload(&payload);
+        assert_eq!(parsed[0].name, "a".repeat(31));
     }
 }

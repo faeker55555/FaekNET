@@ -278,7 +278,10 @@ fn cmd_import(card: &str) {
         println!("Added peer '{}' ({}).", peer.name, peer.virtual_ip);
         cfg.peers.push(peer);
     }
-    cfg.save().expect("failed to write mesh.toml");
+    if let Err(e) = cfg.save() {
+        eprintln!("Could not write {}: {e}", config::CONFIG_PATH);
+        return;
+    }
     println!("Run `meow-meow list-peers` to review, `meow-meow run` to start the mesh.");
 }
 

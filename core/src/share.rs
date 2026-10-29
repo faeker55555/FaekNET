@@ -33,13 +33,24 @@ pub fn decode(token: &str) -> Result<PeerConfig, String> {
         return Err("Peer card is malformed or from an incompatible version".to_string());
     }
     let name = fields[1].to_string();
+    if name.is_empty() || name.chars().count() > 32 || name.chars().any(|c| c.is_control()) {
+        return Err("Peer card has an invalid name".to_string());
+    }
     let virtual_ip: std::net::Ipv4Addr = fields[2]
         .parse()
         .map_err(|_| format!("Peer card has an invalid virtual IP: {}", fields[2]))?;
-    let public_ip = fields[3].to_string();
+    // Only literal IPv4 addresses: a hostname here would make the client
+    // resolve an attacker-chosen name and send mesh traffic to it.
+    let public_ip: std::net::Ipv4Addr = fields[3]
+        .parse()
+        .map_err(|_| format!("Peer card has an invalid public IP: {}", fields[3]))?;
+    let public_ip = public_ip.to_string();
     let public_port: u16 = fields[4]
         .parse()
         .map_err(|_| format!("Peer card has an invalid port: {}", fields[4]))?;
+    if public_port == 0 {
+        return Err("Peer card has an invalid port: 0".to_string());
+    }
 
     Ok(PeerConfig {
         name,
@@ -62,6 +73,22 @@ mod tests {
         assert_eq!(peer.virtual_ip, Ipv4Addr::new(10, 66, 0, 3));
         assert_eq!(peer.public_ip, "203.0.113.5");
         assert_eq!(peer.public_port, 54321);
+    }
+
+    #[test]
+    fn rejects_hostnames_and_bad_fields() {
+        let good = encode("bob", Ipv4Addr::new(10, 66, 0, 3), "203.0.113.5", 4000);
+        assert!(decode(&good).is_ok());
+        for raw in [
+            "1|bob|10.66.0.3|evil.example|4000",
+            "1|bob|10.66.0.3|203.0.113.5|0",
+            "1|bob|10.66.0.3|999.1.1.1|4000",
+            "1|bad\nname|10.66.0.3|203.0.113.5|4000",
+            "1||10.66.0.3|203.0.113.5|4000",
+        ] {
+            let token = format!("{PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw));
+            assert!(decode(&token).is_err(), "should reject {raw:?}");
+        }
     }
 
     #[test]

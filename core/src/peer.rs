@@ -67,7 +67,13 @@ pub struct Peer {
     lan_candidate: RwLock<Option<SocketAddr>>,
     /// GitHub endpoint hint: probe it, but never promote it without authenticated traffic.
     registry_candidate: RwLock<Option<SocketAddr>>,
+    /// Cached DNS result for a hostname-based configured address, so the
+    /// per-packet send path never performs a blocking lookup more than once
+    /// per `RESOLVE_TTL`.
+    resolved_cache: Mutex<Option<(Instant, SocketAddr)>>,
 }
+
+const RESOLVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Peer {
     pub fn new(cfg: &PeerConfig) -> Peer {
@@ -84,6 +90,7 @@ impl Peer {
             services: RwLock::new(Vec::new()),
             lan_candidate: RwLock::new(None),
             registry_candidate: RwLock::new(None),
+            resolved_cache: Mutex::new(None),
         }
     }
 
@@ -105,6 +112,7 @@ impl Peer {
             services: RwLock::new(Vec::new()),
             lan_candidate: RwLock::new(None),
             registry_candidate: RwLock::new(None),
+            resolved_cache: Mutex::new(None),
         }
     }
 
@@ -126,10 +134,26 @@ impl Peer {
         if let Some(addr) = *self.confirmed_addr.read().unwrap() {
             return Some(addr);
         }
-        self.configured_addr_str
+        // IP literals (the normal case, and the only form peer cards may
+        // carry) never touch the resolver.
+        if let Ok(addr) = self.configured_addr_str.parse::<SocketAddr>() {
+            return Some(addr);
+        }
+        let mut cache = self.resolved_cache.lock().unwrap();
+        if let Some((at, addr)) = *cache {
+            if at.elapsed() < RESOLVE_TTL {
+                return Some(addr);
+            }
+        }
+        let resolved = self
+            .configured_addr_str
             .to_socket_addrs()
             .ok()
-            .and_then(|mut it| it.next())
+            .and_then(|mut it| it.next());
+        if let Some(addr) = resolved {
+            *cache = Some((Instant::now(), addr));
+        }
+        resolved
     }
 
     pub fn registry_candidate(&self) -> Option<SocketAddr> {

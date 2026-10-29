@@ -1347,6 +1347,8 @@ On Windows this needs Administrator and wintun.dll next to the executable."
                     Ok(n) => n,
                     Err(e) => {
                         log(&format!("TUN read error: {e}"));
+                        // Back off so a persistently failing device can't spin a core.
+                        thread::sleep(Duration::from_millis(100));
                         continue;
                     }
                 };
@@ -1393,6 +1395,7 @@ On Windows this needs Administrator and wintun.dll next to the executable."
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => continue,
                         _ => {
                             log(&format!("UDP recv error: {e}"));
+                            thread::sleep(Duration::from_millis(100));
                             continue;
                         }
                     },

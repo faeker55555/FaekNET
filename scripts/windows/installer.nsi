@@ -1,7 +1,7 @@
 ; meow-meow Windows installer (NSIS 3.x).
 ;
 ; Build (from the repo root, STAGE must be an absolute path to the packaged folder):
-;   makensis -DSTAGE=/abs/path/lan_mesh-vX-windows-x86_64 -DVERSION=0.60.0 \
+;   makensis -DSTAGE=/abs/path/lan_mesh-vX-windows-x86_64 -DVERSION=0.61.0 \
 ;            -DOUTFILE=/abs/path/meow-meow-vX-setup.exe scripts/windows/installer.nsi
 ;
 ; VERSION must be numeric x.y.z (NSIS version resources need it).

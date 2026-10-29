@@ -11,8 +11,8 @@ android {
         applicationId = "com.faeknet.android"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.56.0"
+        versionCode = 3
+        versionName = "0.60.0"
     }
 
     buildTypes {

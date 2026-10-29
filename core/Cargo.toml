@@ -1,6 +1,6 @@
 [package]
 name = "meow-meow_core"
-version = "0.56.0"
+version = "0.60.0"
 edition = "2021"
 
 [dependencies]

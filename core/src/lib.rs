@@ -4,6 +4,7 @@
 //! gossip-based peer auto-discovery, STUN self-address-discovery, and the
 //! mesh runtime itself (virtual adapter + UDP transport).
 
+pub mod backends;
 pub mod config;
 pub mod crypto;
 pub mod dns;

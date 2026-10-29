@@ -28,7 +28,7 @@ struct Entry {
     expires_at: u64,
 }
 
-fn public_ipv4(ip: Ipv4Addr) -> bool {
+pub(crate) fn public_ipv4(ip: Ipv4Addr) -> bool {
     let [a, b, c, _] = ip.octets();
     !(ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_multicast()
         || a == 0 || a >= 240 || (a == 100 && (64..=127).contains(&b))

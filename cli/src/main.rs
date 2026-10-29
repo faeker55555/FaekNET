@@ -644,8 +644,7 @@ const DIRECTORY_USAGE: &str = "Usage:
   meow-meow directory status
       Show configured directory services, the members they list, and any problems.
   meow-meow directory github <owner/repo> <token> [--branch <name>] [--path <file>]
-      Use a GitHub repository as a directory service. The token must be a
-      fine-grained token with contents read/write on that one repository.
+      Currently disabled: GitHub storage is turned off in this release.
   meow-meow directory mantle <namespace> [write-key]
       Use a MantleDB entry as a directory service. Leave the key out for an
       unclaimed namespace.
@@ -698,7 +697,7 @@ fn human_age(secs: u64) -> String {
 fn print_settings_summary(settings: &config::DirectorySettings) {
     if let Some(g) = &settings.github {
         println!(
-            "  github:  {} (branch {}, file {})",
+            "  github:  {} (branch {}, file {}) -- turned off in this release; `directory clear` removes it",
             g.repo,
             g.branch.as_deref().unwrap_or("default"),
             g.path
@@ -786,6 +785,11 @@ fn backends_validate(settings: &config::DirectorySettings) -> Result<(), String>
 }
 
 fn cmd_directory_github(args: &[String]) {
+    if !meow_meow_core::backends::client::GITHUB_STORAGE_ENABLED {
+        println!("GitHub storage is turned off in this release. Use MantleDB instead:");
+        println!("  meow-meow directory mantle <namespace> [write-key]");
+        return;
+    }
     let (Some(repo), Some(token)) = (args.first(), args.get(1)) else {
         println!("{DIRECTORY_USAGE}");
         return;

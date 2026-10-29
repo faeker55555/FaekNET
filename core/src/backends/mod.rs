@@ -316,6 +316,10 @@ pub struct FetchReport {
     pub source: Option<String>,
     /// One line per backend that failed, was stale, or was rejected.
     pub problems: Vec<String>,
+    /// Backends that answered: they returned a stored document, or confirmed
+    /// that nothing is stored. Zero means we know nothing about the current
+    /// directory, so the caller must not publish a new one.
+    pub answered: usize,
 }
 
 /// Reads every backend and returns the newest valid directory.
@@ -328,8 +332,14 @@ pub fn fetch_latest(backends: &[Box<dyn Backend>], key: &DirectoryKey, floor_seq
     for backend in backends {
         let name = backend.name();
         let bytes = match backend.fetch() {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => continue,
+            Ok(Some(bytes)) => {
+                report.answered += 1;
+                bytes
+            }
+            Ok(None) => {
+                report.answered += 1;
+                continue;
+            }
             Err(e) => {
                 report.problems.push(format!("{name}: {e}"));
                 continue;

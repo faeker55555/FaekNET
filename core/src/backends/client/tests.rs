@@ -209,19 +209,26 @@ fn one_failing_service_does_not_block_publishing_to_the_others() {
 #[test]
 fn invites_roundtrip_and_reject_damage() {
     let settings = DirectorySettings {
+        github: None,
+        mantle: Some(MantleSettings { namespace: "faeknet-abc123".into(), write_key: None }),
+    };
+    let invite = encode_invite(&settings).unwrap();
+    assert!(invite.starts_with("FNDIR1:"));
+    let back = decode_invite(&invite).unwrap();
+    assert_eq!(back.mantle.unwrap().namespace, "faeknet-abc123");
+
+    // GitHub storage is off for now, so an invite carrying a GitHub token is refused
+    // and never produced, which keeps the token out of shared invite lines.
+    let with_github = DirectorySettings {
         github: Some(GithubSettings {
             repo: "owner/faeknet-dir".into(),
             branch: None,
             path: "faeknet-directory.json".into(),
             token: "github_pat_0123456789abcdefghij".into(),
         }),
-        mantle: Some(MantleSettings { namespace: "faeknet-abc123".into(), write_key: None }),
+        mantle: None,
     };
-    let invite = encode_invite(&settings).unwrap();
-    assert!(invite.starts_with("FNDIR1:"));
-    let back = decode_invite(&invite).unwrap();
-    assert_eq!(back.github.unwrap().repo, "owner/faeknet-dir");
-    assert_eq!(back.mantle.unwrap().namespace, "faeknet-abc123");
+    assert!(encode_invite(&with_github).is_err());
 
     assert!(decode_invite("LMESH1:whatever").is_err());
     assert!(decode_invite("FNDIR1:!!!").is_err());
@@ -271,4 +278,84 @@ fn live_endpoint_change_reaches_another_member_over_mantledb() {
     let alice_now = find(&seen.members, 2).expect("alice still listed");
     assert_eq!(alice_now.public_ip, Ipv4Addr::new(8, 8, 8, 9));
     assert_eq!(alice_now.public_port, 61000);
+}
+
+/// A store that can be taken offline, to simulate a service outage.
+#[derive(Clone)]
+struct Outage {
+    inner: SharedStore,
+    up: Arc<Mutex<bool>>,
+}
+
+impl Backend for Outage {
+    fn name(&self) -> String {
+        "outage".into()
+    }
+    fn fetch(&self) -> Result<Option<Vec<u8>>, String> {
+        if *self.up.lock().unwrap() {
+            self.inner.fetch()
+        } else {
+            Err("service unreachable".into())
+        }
+    }
+    fn publish(&self, bytes: &[u8]) -> Result<(), String> {
+        if *self.up.lock().unwrap() {
+            self.inner.publish(bytes)
+        } else {
+            Err("service unreachable".into())
+        }
+    }
+}
+
+fn stored_seq_and_peers(store: &SharedStore, k: &DirectoryKey) -> (u64, usize) {
+    let bytes = store.fetch().unwrap().expect("a directory is stored");
+    let doc = crate::backends::open(k, &bytes, T0 + 1000).expect("stored directory verifies");
+    (doc.seq, doc.peers.len())
+}
+
+/// A member that starts during an outage must not replace the shared directory
+/// with a list containing only itself.
+#[test]
+fn a_member_starting_during_an_outage_does_not_overwrite_the_directory() {
+    let (store, k) = (SharedStore::default(), key());
+    let mut bob = client(&store, &k);
+    bob.sync(&member(3, "bob"), Some(addr(3, 40000)), T0);
+    let before = stored_seq_and_peers(&store, &k);
+
+    let up = Arc::new(Mutex::new(false));
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(Outage { inner: store.clone(), up })];
+    let mut alice = DirectoryClient::with_backends(backends, k.clone());
+    let result = alice.sync(&member(2, "alice"), Some(addr(2, 54321)), T0 + 1);
+
+    assert!(!result.published);
+    assert!(result.notes.iter().any(|n| n.contains("no directory service answered")), "{:?}", result.notes);
+    assert_eq!(stored_seq_and_peers(&store, &k), before);
+}
+
+/// Same guard mid-session: once we know the directory, an outage must not make
+/// us publish a version without the other members.
+#[test]
+fn a_member_does_not_publish_a_partial_directory_when_the_service_drops_out() {
+    let (store, k) = (SharedStore::default(), key());
+    let mut bob = client(&store, &k);
+    bob.sync(&member(3, "bob"), Some(addr(3, 40000)), T0);
+
+    let up = Arc::new(Mutex::new(true));
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(Outage { inner: store.clone(), up: up.clone() })];
+    let mut alice = DirectoryClient::with_backends(backends, k.clone());
+    let first = alice.sync(&member(2, "alice"), Some(addr(2, 54321)), T0 + 1);
+    assert!(first.published);
+    let seen_by_alice = first.members.len();
+    assert_eq!(seen_by_alice, 1, "alice sees bob");
+
+    // Outage, then alice's endpoint changes. She must wait, not publish.
+    *up.lock().unwrap() = false;
+    let during = alice.sync(&member(2, "alice"), Some(addr(2, 60000)), T0 + 120);
+    assert!(!during.published);
+
+    // Service returns: the change goes out, with bob still in the list.
+    *up.lock().unwrap() = true;
+    let after = alice.sync(&member(2, "alice"), Some(addr(2, 60000)), T0 + 180);
+    assert!(after.published);
+    assert_eq!(stored_seq_and_peers(&store, &k), (3, 2));
 }

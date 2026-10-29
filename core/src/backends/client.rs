@@ -85,10 +85,17 @@ impl DirectoryClient {
         }
 
         if let Some(addr) = my_addr {
-            match self.publish_if_due(me, addr, now, &mut result.notes) {
-                Ok(true) => result.published = true,
-                Ok(false) => {}
-                Err(note) => result.notes.push(note),
+            if report.answered == 0 {
+                // Every service failed to answer. We cannot tell the current
+                // membership, so publishing now would replace the real directory
+                // with one that lists only us.
+                result.notes.push("not publishing: no directory service answered this sync".into());
+            } else {
+                match self.publish_if_due(me, addr, now, &mut result.notes) {
+                    Ok(true) => result.published = true,
+                    Ok(false) => {}
+                    Err(note) => result.notes.push(note),
+                }
             }
         }
 
@@ -126,7 +133,10 @@ impl DirectoryClient {
         peers.push(mine);
         peers.sort_by_key(|p| p.virtual_ip.octets());
 
-        let doc = next_document(self.latest.as_ref(), peers, now);
+        let mut doc = next_document(self.latest.as_ref(), peers, now);
+        // Never publish at or below a sequence number we already accepted. Members
+        // ignore anything below their floor, so a lower seq would be invisible to them.
+        doc.seq = doc.seq.max(self.floor_seq.saturating_add(1));
         doc.validate(now).map_err(|e| format!("not publishing: {e}"))?;
         let report = publish_all(&self.backends, &self.key, &doc).map_err(|e| format!("publish failed: {e}"))?;
         // A failing service is only a note: it must not block the others.
@@ -184,9 +194,19 @@ pub fn sanitize_name(name: &str) -> String {
     }
 }
 
+/// GitHub storage is switched off for now. The adapter stays in the tree and its
+/// tests still run, but no configuration or invite can use it until this is set
+/// back to true.
+pub const GITHUB_STORAGE_ENABLED: bool = false;
+
 fn build_backends(settings: &DirectorySettings) -> Result<Vec<Box<dyn Backend>>, String> {
     let mut backends: Vec<Box<dyn Backend>> = Vec::new();
     if let Some(g) = &settings.github {
+        if !GITHUB_STORAGE_ENABLED {
+            return Err(
+                "GitHub storage is turned off in this release; use MantleDB instead: run `meow-meow directory clear`, then `meow-meow directory mantle <namespace>`".into(),
+            );
+        }
         backends.push(Box::new(GithubBackend::new(&g.repo, g.branch.as_deref(), &g.path, &g.token)?));
     }
     if let Some(m) = &settings.mantle {

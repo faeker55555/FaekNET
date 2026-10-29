@@ -19,16 +19,13 @@ Services (`add-service`) still travel through gossip between connected peers, as
 
 ## Storage services
 
-Two free services are supported. Configure one or both. Each holds the same signed
-document, so one going down does not stop the network.
+**MantleDB** (https://mantledb.sh) is the storage service in this release: a JSON
+entry, no account needed. A namespace without a key can be written by anyone who knows
+its name. Claim it to require a key: `meow-meow directory mantle-claim <namespace>`.
 
-- **GitHub**: one JSON file in a repository you own. Create a repository, then create a
-  fine-grained token that can read and write **contents of that one repository only**.
-  Writes are compare-and-swap, so two members updating at once cannot silently overwrite
-  each other.
-- **MantleDB** (https://mantledb.sh): a JSON entry, no account needed. A namespace
-  without a key can be written by anyone who knows its name. Claim it to require a key:
-  `meow-meow directory mantle-claim <namespace>`.
+GitHub storage is turned off in this release. Its adapter is in the code but refuses to
+run, and invites never carry a GitHub token. The directory format takes several
+services, so it can be turned back on later without changing the network.
 
 Trust does not depend on either service. The directory is signed with a key derived from
 the network key (PSK). Anyone who can write to a storage service can delete or withhold
@@ -44,7 +41,6 @@ minute. The effect is a short delay in reaching peers, not a takeover.
 On the first machine:
 
 ```
-meow-meow directory github <owner/repo> <token>       # or:
 meow-meow directory mantle <namespace>                # unclaimed, or add a write key
 meow-meow directory invite                            # prints one FNDIR1:... line
 ```
@@ -60,8 +56,11 @@ meow-meow run
 without publishing anything.
 
 Settings are stored in `directory.toml`, next to `mesh.toml`. On Unix the file is mode
-0600. **The invite contains the GitHub token and MantleDB write key.** Share it the same
-way as the network key: privately, never publicly.
+0600. **An invite contains the MantleDB write key if the namespace is claimed.** Share it
+the same way as the network key: privately, never publicly.
+
+If `directory.toml` still has a GitHub entry from an earlier version, the shared directory
+stays off and the log says so. Run `meow-meow directory clear`, then set up MantleDB.
 
 Changes take effect the next time the mesh starts.
 
@@ -75,8 +74,6 @@ from other members.
 
 - At most 254 members per directory (the mesh subnet is 10.66.0.0/24).
 - Each directory document is at most 64 KB.
-- GitHub: each publish is a commit. Heartbeats run every 30 minutes, so expect about 48
-  commits a day per network. Use a dedicated repository.
 - Clocks on members should be roughly in sync. Freshness is decided by publish time.
 
 ## Relation to the older public directory

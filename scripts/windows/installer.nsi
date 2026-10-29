@@ -202,9 +202,11 @@ Section "Uninstall"
 
   ; mesh.toml holds this machine's identity keys and peer list. Keep it unless
   ; the user explicitly asks for removal, so a reinstall keeps the same identity.
+  ; directory.toml holds the GitHub token / MantleDB write key, so it goes with mesh.toml.
   ${If} ${FileExists} "$INSTDIR\mesh.toml"
-    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your meow-meow settings (mesh.toml: identity keys and peer list)?$\r$\n$\r$\nChoose No to keep them for a future reinstall." IDNO +2
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your meow-meow settings (mesh.toml: identity keys and peer list, and directory.toml: directory service credentials)?$\r$\n$\r$\nChoose No to keep them for a future reinstall." IDNO +3
     Delete "$INSTDIR\mesh.toml"
+    Delete "$INSTDIR\directory.toml"
   ${EndIf}
 
   ; Removes the folder only if it is now empty (keeps mesh.toml when kept).

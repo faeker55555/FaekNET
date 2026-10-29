@@ -15,6 +15,8 @@ pub mod mesh;
 pub mod peer;
 pub mod proto;
 pub mod registry;
+pub mod invite;
+pub mod setup;
 pub mod share;
 pub mod stun;
 pub mod warpfix;

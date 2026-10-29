@@ -157,15 +157,23 @@ pub fn claim_at(base: &str, namespace: &str, email: Option<&str>) -> Result<Stri
         .args(["-w", "\n%{http_code}", &url])
         .args(["-K", "-"]);
     let (status, body) = run_curl(cmd, "")?;
-    if status != 200 {
-        return Err(http_error(status, &body));
+    parse_claim_response(status, &body)
+}
+
+/// Reads the key from a claim answer. The service answers `201 Created` on
+/// success, so any 2xx with a key counts. A successful body contains the key,
+/// so errors below never include the body.
+fn parse_claim_response(status: u16, body: &[u8]) -> Result<String, String> {
+    if !(200..300).contains(&status) {
+        return Err(http_error(status, body));
     }
-    let json: serde_json::Value =
-        serde_json::from_slice(&body).map_err(|e| format!("unexpected claim response: {e}"))?;
+    let json: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
+        format!("claim answered HTTP {status} with a response that is not JSON; the namespace may already be claimed")
+    })?;
     json.get("key")
         .and_then(|k| k.as_str())
         .map(str::to_string)
-        .ok_or_else(|| "claim response had no key".to_string())
+        .ok_or_else(|| format!("claim answered HTTP {status} but included no key; the namespace may already be claimed"))
 }
 
 fn validate_namespace(ns: &str) -> Result<(), String> {

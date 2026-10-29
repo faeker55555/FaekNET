@@ -47,6 +47,9 @@ pub struct SyncResult {
     pub published: bool,
     /// Human-readable problems. The caller logs them, deduplicated across syncs.
     pub notes: Vec<String>,
+    /// True if at least one storage service answered. False means we know
+    /// nothing about the network, which is different from an empty network.
+    pub reachable: bool,
 }
 
 pub struct DirectoryClient {
@@ -79,6 +82,7 @@ impl DirectoryClient {
         let mut result = SyncResult::default();
         let report = fetch_latest(&self.backends, &self.key, self.floor_seq, now);
         result.notes.extend(report.problems.iter().cloned());
+        result.reachable = report.answered > 0;
         if let Some(best) = report.best {
             self.floor_seq = self.floor_seq.max(best.seq);
             self.latest = Some(best);

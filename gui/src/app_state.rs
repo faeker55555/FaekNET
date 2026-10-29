@@ -38,12 +38,25 @@ pub enum Screen {
     Settings,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum SetupStage {
-    /// No mesh.toml exists yet / user chose to (re)configure identity.
-    Identity,
-    /// Identity saved; offer to add a bootstrap peer or start solo.
-    Bootstrap,
+    /// First screen: create a network, or join one.
+    Welcome,
+    /// Name and optional virtual IP, then one button creates the network.
+    Create,
+    /// Paste the invite, name, optional virtual IP, then one button joins.
+    Join,
+    /// A setup job is running in the background. Nothing is saved until it succeeds.
+    Working,
+    /// The network exists. Shows the invite to copy, then starts it.
+    Created,
+}
+
+/// Result of a background setup job (create or join).
+pub enum SetupOutcome {
+    Created { invite: String, config: Config },
+    Joined { config: Config },
+    Failed(String),
 }
 
 pub struct AddPeerModal {
@@ -117,26 +130,29 @@ impl Default for ManualAddrForm {
 
 pub struct SetupForm {
     pub name: String,
+    /// Optional. Empty means the app picks one.
     pub virtual_ip: String,
-    pub prefix: String,
-    pub listen_port: String,
-    pub psk_input: String,
-    pub generated_psk: Option<String>,
-    pub domain_suffix: String,
+    /// The pasted invite (join screen).
+    pub invite_input: String,
     pub error: Option<String>,
+    /// The invite of a network just created, shown on the Created screen.
+    pub invite_out: Option<String>,
+    /// Running setup job, polled once per frame.
+    pub job: Option<std::sync::mpsc::Receiver<SetupOutcome>>,
+    /// Stage to return to if the job fails.
+    pub return_to: SetupStage,
 }
 
 impl Default for SetupForm {
     fn default() -> Self {
         SetupForm {
             name: "player".to_string(),
-            virtual_ip: "10.66.0.1".to_string(),
-            prefix: "24".to_string(),
-            listen_port: "54321".to_string(),
-            psk_input: String::new(),
-            generated_psk: None,
-            domain_suffix: "mesh".to_string(),
+            virtual_ip: String::new(),
+            invite_input: String::new(),
             error: None,
+            invite_out: None,
+            job: None,
+            return_to: SetupStage::Welcome,
         }
     }
 }
@@ -200,14 +216,14 @@ impl App {
             match Config::load() {
                 Ok(cfg) => start_mesh_or_stopped(cfg),
                 Err(_) => AppMode::Setup {
-                    stage: SetupStage::Identity,
+                    stage: SetupStage::Welcome,
                     form: SetupForm::default(),
                     saved_config: None,
                 },
             }
         } else {
             AppMode::Setup {
-                stage: SetupStage::Identity,
+                stage: SetupStage::Welcome,
                 form: SetupForm::default(),
                 saved_config: None,
             }

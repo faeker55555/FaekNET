@@ -242,7 +242,8 @@ impl DirectorySettings {
     }
 }
 
-fn write_private(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes a file that holds secrets: mode 0600 on Unix, replaced in place.
+pub fn write_private(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

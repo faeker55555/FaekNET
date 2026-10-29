@@ -246,3 +246,15 @@ fn live_mantledb_roundtrip() {
     assert!(fetched.problems.is_empty(), "{:?}", fetched.problems);
     assert_eq!(fetched.best.unwrap(), doc);
 }
+
+#[test]
+fn claim_accepts_201_created_and_never_echoes_a_key_on_failure() {
+    let ok = parse_claim_response(201, br#"{"success":true,"key":"abcdefgh1234"}"#).unwrap();
+    assert_eq!(ok, "abcdefgh1234");
+    let err = parse_claim_response(200, br#"{"success":true,"secret":"abcdefgh1234"}"#).unwrap_err();
+    assert!(!err.contains("abcdefgh1234"), "{err}");
+    let err = parse_claim_response(200, b"not json abcdefgh1234").unwrap_err();
+    assert!(!err.contains("abcdefgh1234"), "{err}");
+    assert!(parse_claim_response(409, br#"{"error":"namespace already claimed"}"#).unwrap_err().contains("409"));
+}
+

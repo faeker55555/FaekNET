@@ -1,3 +1,4 @@
+use meow_meow_core::backends::client::{DirectoryClient, Member};
 use meow_meow_core::{config, crypto, hosts, mesh, share, stun};
 
 use config::{Config, MeConfig, PeerConfig};
@@ -27,6 +28,8 @@ fn print_usage() {
         "meow-meow -- pure P2P virtual LAN for games, no third-party VPN service
 
 Usage:
+  meow-meow directory ...   Shared directory so address changes and new members
+                           propagate automatically (`meow-meow directory` for help)
   meow-meow init            Interactive first-time setup (creates mesh.toml)
   meow-meow add-peer        Interactively add a peer to mesh.toml
   meow-meow export          Print a one-line peer card to send to a friend
@@ -637,9 +640,278 @@ mesh.toml so future launches have an immediately usable address without waiting 
     }
 }
 
+const DIRECTORY_USAGE: &str = "Usage:
+  meow-meow directory status
+      Show configured directory services, the members they list, and any problems.
+  meow-meow directory github <owner/repo> <token> [--branch <name>] [--path <file>]
+      Use a GitHub repository as a directory service. The token must be a
+      fine-grained token with contents read/write on that one repository.
+  meow-meow directory mantle <namespace> [write-key]
+      Use a MantleDB entry as a directory service. Leave the key out for an
+      unclaimed namespace.
+  meow-meow directory mantle-claim <namespace> [recovery-email]
+      Claim a MantleDB namespace and store its write key in mesh.toml.
+  meow-meow directory invite
+      Print one line that carries the directory settings to a new member.
+  meow-meow directory join <invite>
+      Store directory settings from an invite line.
+  meow-meow directory clear
+      Stop using the shared directory.
+Changes take effect the next time the mesh starts.";
+
+fn cmd_directory(args: &[String]) {
+    match args.get(2).map(|s| s.as_str()) {
+        Some("status") => cmd_directory_status(),
+        Some("github") => cmd_directory_github(&args[3.min(args.len())..]),
+        Some("mantle") => cmd_directory_mantle(&args[3.min(args.len())..]),
+        Some("mantle-claim") => cmd_directory_mantle_claim(&args[3.min(args.len())..]),
+        Some("invite") => cmd_directory_invite(),
+        Some("join") => match args.get(3) {
+            Some(invite) => cmd_directory_join(invite),
+            None => eprintln!("Usage: meow-meow directory join <invite>"),
+        },
+        Some("clear") => cmd_directory_clear(),
+        _ => println!("{DIRECTORY_USAGE}"),
+    }
+}
+
+fn load_config_or_explain() -> Option<Config> {
+    match Config::load() {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("Could not load {}: {e}. Run `meow-meow init` first.", config::CONFIG_PATH);
+            None
+        }
+    }
+}
+
+fn human_age(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86400),
+    }
+}
+
+/// Describes the configured services without printing any secret.
+fn print_settings_summary(settings: &config::DirectorySettings) {
+    if let Some(g) = &settings.github {
+        println!(
+            "  github:  {} (branch {}, file {})",
+            g.repo,
+            g.branch.as_deref().unwrap_or("default"),
+            g.path
+        );
+    }
+    if let Some(m) = &settings.mantle {
+        let key = if m.write_key.is_some() { "claimed" } else { "unclaimed" };
+        println!("  mantle:  namespace {} ({key})", m.namespace);
+    }
+}
+
+/// Reads the directory without publishing and prints what it lists.
+fn print_directory_contents(cfg: &Config, settings: &config::DirectorySettings) {
+    let mut client = match DirectoryClient::from_settings(settings, &cfg.me.psk) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            return;
+        }
+    };
+    let me = Member { name: cfg.me.name.clone(), virtual_ip: cfg.me.virtual_ip };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let result = client.sync(&me, None, now);
+    if result.members.is_empty() {
+        println!("Members: none listed yet (the first member appears after its mesh starts).");
+    } else {
+        println!("Members ({}):", result.members.len());
+        for p in &result.members {
+            println!(
+                "  {:<14} {:<11} {}:{:<6} updated {}",
+                p.name,
+                p.virtual_ip,
+                p.public_ip,
+                p.public_port,
+                human_age(now.saturating_sub(p.updated_at))
+            );
+        }
+    }
+    for note in &result.notes {
+        println!("  problem: {note}");
+    }
+}
+
+fn cmd_directory_status() {
+    let Some(cfg) = load_config_or_explain() else { return };
+    let settings = match config::DirectorySettings::load_optional() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Could not read {}: {e}", config::DIRECTORY_PATH);
+            return;
+        }
+    };
+    let Some(settings) = settings else {
+        println!("No shared directory configured.");
+        println!("Set one with `meow-meow directory github ...` or `meow-meow directory mantle ...`,");
+        println!("or paste an invite with `meow-meow directory join <invite>`.");
+        return;
+    };
+    println!("Shared directory services:");
+    print_settings_summary(&settings);
+    print_directory_contents(&cfg, &settings);
+}
+
+/// Validates, stores, and reads back the new settings.
+fn save_directory(cfg: Config, settings: config::DirectorySettings) {
+    if let Err(e) = backends_validate(&settings) {
+        eprintln!("Not saved: {e}");
+        return;
+    }
+    if let Err(e) = settings.save() {
+        eprintln!("Could not write {}: {e}", config::DIRECTORY_PATH);
+        return;
+    }
+    println!("Saved to {} (file mode 0600 on Unix).", config::DIRECTORY_PATH);
+    print_settings_summary(&settings);
+    print_directory_contents(&cfg, &settings);
+    println!("Restart `meow-meow run` (or the GUI) to start syncing with the directory.");
+}
+
+fn backends_validate(settings: &config::DirectorySettings) -> Result<(), String> {
+    meow_meow_core::backends::client::validate_settings(settings)
+}
+
+fn cmd_directory_github(args: &[String]) {
+    let (Some(repo), Some(token)) = (args.first(), args.get(1)) else {
+        println!("{DIRECTORY_USAGE}");
+        return;
+    };
+    let mut branch = None;
+    let mut path = None;
+    let mut i = 2;
+    while i < args.len() {
+        let value = args.get(i + 1).cloned();
+        match (args[i].as_str(), value) {
+            ("--branch", Some(v)) => branch = Some(v),
+            ("--path", Some(v)) => path = Some(v),
+            (other, _) => {
+                eprintln!("Unknown or incomplete option {other:?}.");
+                return;
+            }
+        }
+        i += 2;
+    }
+    let Some(cfg) = load_config_or_explain() else { return };
+    let mut settings = current_directory_or_default();
+    settings.github = Some(config::GithubSettings {
+        repo: repo.clone(),
+        branch,
+        path: path.unwrap_or_else(|| meow_meow_core::backends::github::DEFAULT_PATH.to_string()),
+        token: token.clone(),
+    });
+    save_directory(cfg, settings);
+}
+
+fn cmd_directory_mantle(args: &[String]) {
+    let Some(namespace) = args.first() else {
+        println!("{DIRECTORY_USAGE}");
+        return;
+    };
+    let Some(cfg) = load_config_or_explain() else { return };
+    let mut settings = current_directory_or_default();
+    settings.mantle = Some(config::MantleSettings {
+        namespace: namespace.clone(),
+        write_key: args.get(1).cloned(),
+    });
+    save_directory(cfg, settings);
+}
+
+fn cmd_directory_mantle_claim(args: &[String]) {
+    let Some(namespace) = args.first() else {
+        println!("{DIRECTORY_USAGE}");
+        return;
+    };
+    let Some(cfg) = load_config_or_explain() else { return };
+    println!("Claiming MantleDB namespace {namespace}...");
+    let key = match meow_meow_core::backends::mantle::claim(namespace, args.get(1).map(String::as_str)) {
+        Ok(key) => key,
+        Err(e) => {
+            eprintln!("Claim failed: {e}");
+            return;
+        }
+    };
+    let mut settings = current_directory_or_default();
+    settings.mantle = Some(config::MantleSettings {
+        namespace: namespace.clone(),
+        write_key: Some(key),
+    });
+    // The service shows the key only once, so it is stored right away and never printed.
+    println!("Claimed. The write key is stored in {} and is not shown again.", config::DIRECTORY_PATH);
+    save_directory(cfg, settings);
+}
+
+/// Existing directory settings, or empty ones. An unreadable file is reported
+/// and treated as empty, so it is overwritten only by an explicit command.
+fn current_directory_or_default() -> config::DirectorySettings {
+    match config::DirectorySettings::load_optional() {
+        Ok(Some(s)) => s,
+        Ok(None) => config::DirectorySettings::default(),
+        Err(e) => {
+            eprintln!("Warning: could not read {}: {e}", config::DIRECTORY_PATH);
+            config::DirectorySettings::default()
+        }
+    }
+}
+
+fn cmd_directory_invite() {
+    if load_config_or_explain().is_none() {
+        return;
+    }
+    let settings = match config::DirectorySettings::load_optional() {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            eprintln!("No directory configured to invite people to.");
+            return;
+        }
+        Err(e) => {
+            eprintln!("Could not read {}: {e}", config::DIRECTORY_PATH);
+            return;
+        }
+    };
+    match meow_meow_core::backends::client::encode_invite(&settings) {
+        Ok(line) => {
+            println!("{line}");
+            println!();
+            println!("This line contains the GitHub token and/or the MantleDB write key.");
+            println!("Send it the same way as the network key: privately, never publicly.");
+        }
+        Err(e) => eprintln!("Could not create an invite: {e}"),
+    }
+}
+
+fn cmd_directory_join(invite: &str) {
+    let Some(cfg) = load_config_or_explain() else { return };
+    match meow_meow_core::backends::client::decode_invite(invite) {
+        Ok(settings) => save_directory(cfg, settings),
+        Err(e) => eprintln!("Invite rejected: {e}"),
+    }
+}
+
+fn cmd_directory_clear() {
+    match config::DirectorySettings::remove() {
+        Ok(()) => println!("Shared directory cleared. Peers you already know keep working."),
+        Err(e) => eprintln!("Could not remove {}: {e}", config::DIRECTORY_PATH),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
+        Some("directory") => cmd_directory(&args),
         Some("init") => cmd_init(),
         Some("add-peer") => cmd_add_peer(),
         Some("export") => cmd_export(),

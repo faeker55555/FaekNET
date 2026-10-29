@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use meow_meow_core::backends::{Backend, MAX_DOC_BYTES};
+use super::{Backend, MAX_DOC_BYTES};
 
 pub const DEFAULT_BASE: &str = "https://mantledb.sh";
 /// Entry path used when the caller does not choose one.
@@ -249,7 +249,13 @@ fn http_error(status: u16, body: &[u8]) -> String {
         _ => "unexpected response",
     };
     // Only a short, non-sensitive snippet of the body is included.
-    let snippet: String = String::from_utf8_lossy(body).chars().take(120).collect();
+    let snippet: String = String::from_utf8_lossy(body)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(120)
+        .collect();
     format!("HTTP {status} ({hint}): {snippet}")
 }
 

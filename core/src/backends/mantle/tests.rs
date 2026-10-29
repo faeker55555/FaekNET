@@ -1,6 +1,6 @@
 //! Tests run against an in-process mock of the MantleDB HTTP API, so they need
 //! no network. One `#[ignore]`d test talks to the real service; run it with
-//! `cargo test -p meow-meow_backend_mantle -- --ignored`.
+//! `cargo test -p meow-meow_core backends::mantle -- --ignored`.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use meow_meow_core::backends::{fetch_latest, next_document, publish_all, Backend, DirectoryKey, PeerRecord, MAX_DOC_BYTES};
-use meow_meow_core::crypto::Cipher;
+use crate::backends::{fetch_latest, next_document, publish_all, Backend, DirectoryKey, PeerRecord, MAX_DOC_BYTES};
+use crate::crypto::Cipher;
 
 use super::*;
 

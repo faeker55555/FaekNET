@@ -198,6 +198,114 @@ pub struct Config {
     pub services: Vec<ServiceConfig>,
 }
 
+/// Where the shared directory is stored. Each configured service holds the same
+/// signed document, so one going down does not stop the network.
+///
+/// Kept in its own file (`directory.toml`, next to `mesh.toml`) rather than in
+/// `Config`, so that existing code which builds or saves `Config` keeps working
+/// unchanged. Contains secrets (GitHub token, MantleDB write key), so on Unix the
+/// file is written mode 0600.
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
+pub struct DirectorySettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<GithubSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mantle: Option<MantleSettings>,
+}
+
+pub const DIRECTORY_PATH: &str = "directory.toml";
+
+impl DirectorySettings {
+    /// `Ok(None)` when no directory is configured. A file that exists but does
+    /// not parse is an error, so a typo never silently disables the directory.
+    pub fn load_optional() -> std::io::Result<Option<DirectorySettings>> {
+        match fs::read_to_string(DIRECTORY_PATH) {
+            Ok(text) => toml::from_str(&text)
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let text = toml::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        write_private(DIRECTORY_PATH, text.as_bytes())
+    }
+
+    pub fn remove() -> std::io::Result<()> {
+        match fs::remove_file(DIRECTORY_PATH) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn write_private(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, bytes)
+    }
+}
+
+/// One file in a GitHub repository. The token is a secret, so Debug output redacts it.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GithubSettings {
+    /// `owner/name`
+    pub repo: String,
+    /// Branch to read and write. Unset means the repository's default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default = "default_github_path")]
+    pub path: String,
+    pub token: String,
+}
+
+fn default_github_path() -> String {
+    "faeknet-directory.json".to_string()
+}
+
+impl std::fmt::Debug for GithubSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GithubSettings")
+            .field("repo", &self.repo)
+            .field("branch", &self.branch)
+            .field("path", &self.path)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// One MantleDB entry. `write_key` is required for a claimed namespace.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct MantleSettings {
+    pub namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_key: Option<String>,
+}
+
+impl std::fmt::Debug for MantleSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MantleSettings")
+            .field("namespace", &self.namespace)
+            .field("write_key", &self.write_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 impl Config {
     pub fn load() -> std::io::Result<Config> {
         let content = fs::read_to_string(CONFIG_PATH)?;

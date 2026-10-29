@@ -22,6 +22,10 @@
 //! Backends are independent. A backend that is down, read-only, or serving
 //! garbage is recorded in the report and skipped; the rest still count.
 
+pub mod client;
+pub mod github;
+pub mod mantle;
+
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;

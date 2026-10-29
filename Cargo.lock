@@ -2368,14 +2368,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "meow-meow_backend_mantle"
-version = "0.56.0"
-dependencies = [
- "meow-meow_core",
- "serde_json",
-]
-
-[[package]]
 name = "meow-meow_browser"
 version = "0.56.0"
 dependencies = [

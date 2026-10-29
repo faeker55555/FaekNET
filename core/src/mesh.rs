@@ -8,6 +8,8 @@ use std::time::Duration;
 use socket2::{Domain, Socket, Type};
 use tun_rs::DeviceBuilder;
 
+use crate::backends::client::{DirectoryClient, Member, SYNC_INTERVAL_SECS};
+use crate::backends::PeerRecord;
 use crate::config::{Config, PeerConfig};
 use crate::crypto::Cipher;
 use crate::dns::{self, DnsHandle};
@@ -770,6 +772,48 @@ fn persist_peer_addr(state: &MeshState, virtual_ip: Ipv4Addr, name: &str, addr: 
     if let Err(e) = cfg.save() {
         log(&format!("Warning: could not persist peer address: {e}"));
     }
+}
+
+/// Applies other members' endpoints from the shared directory to our peer table.
+///
+/// The directory is authenticated with the network key, so these entries are
+/// trusted the same way gossip is. `apply_gossip_entry` keeps an address only
+/// if it is fresher than the one we hold, so an old directory cannot roll a
+/// peer back to an address it has already left. Returns one line per peer
+/// that changed; the caller logs and persists them.
+fn apply_directory_members(state: &MeshState, members: &[PeerRecord]) -> Vec<DirectoryChange> {
+    let mut changes = Vec::new();
+    for m in members {
+        if m.virtual_ip == state.my_virtual_ip {
+            continue;
+        }
+        let addr = SocketAddr::from((m.public_ip, m.public_port));
+        let entry = GossipEntry::peer(m.virtual_ip, m.name.clone(), addr, m.updated_at as u32);
+        let Some(outcome) = state.apply_gossip_entry(&entry) else {
+            continue;
+        };
+        let what = match outcome {
+            GossipOutcome::NewPeer { .. } => "joined the mesh at",
+            GossipOutcome::AddressUpdated { .. } => "moved to",
+            GossipOutcome::NameUpdated { .. } => "renamed",
+            _ => "updated",
+        };
+        changes.push(DirectoryChange {
+            virtual_ip: m.virtual_ip,
+            name: m.name.clone(),
+            addr,
+            text: format!("Directory: {} ({}) {what} {addr}", m.name, m.virtual_ip),
+        });
+    }
+    changes
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DirectoryChange {
+    virtual_ip: Ipv4Addr,
+    name: String,
+    addr: SocketAddr,
+    text: String,
 }
 
 /// Builds the gossip entries describing everything we currently know:
@@ -1758,6 +1802,71 @@ If this keeps happening, try Settings -> manually enter your public IP/port, or 
         });
     }
 
+    // ---- Shared directory: publish our endpoint, learn everyone else's ----
+    // Runs only when `[directory]` is configured. Any change (a new IP or port,
+    // a new member, a removed member) reaches every member within about one
+    // sync interval, so nobody has to re-share a peer card by hand.
+    let directory_settings = match crate::config::DirectorySettings::load_optional() {
+        Ok(settings) => settings,
+        Err(e) => {
+            log(&format!("Shared directory disabled: could not read directory.toml: {e}"));
+            None
+        }
+    };
+    if let Some(settings) = directory_settings {
+        let (psk, name) = {
+            let cfg = state.config.lock().unwrap();
+            (cfg.me.psk.clone(), cfg.me.name.clone())
+        };
+        match DirectoryClient::from_settings(&settings, &psk) {
+            Ok(mut client) => {
+                let me = Member { name, virtual_ip: state.my_virtual_ip };
+                let state = state.clone();
+                let running = running.clone();
+                let sock = sock.clone();
+                thread::spawn(move || {
+                    log("Shared directory enabled: publishing our endpoint and syncing members.");
+                    // Keys ignore digits, so curl's per-request timings ("after 3 ms")
+                    // and sequence numbers do not count as a change.
+                    let note_key = |n: &str| -> String { n.chars().filter(|c| !c.is_ascii_digit()).collect() };
+                    let mut last_keys: Vec<String> = Vec::new();
+                    while running.load(Ordering::Relaxed) {
+                        let my_addr = state.my_public_addr.lock().unwrap().map(|(a, _)| a);
+                        let result = client.sync(&me, my_addr, now_secs());
+                        // Log problems only when they change, so a service that stays
+                        // down does not fill the log every minute.
+                        let keys: Vec<String> = result.notes.iter().map(|n| note_key(n)).collect();
+                        if keys != last_keys {
+                            for note in &result.notes {
+                                log(&format!("Directory: {note}"));
+                            }
+                            last_keys = keys;
+                        }
+                        if result.published {
+                            log("Directory: published our current endpoint.");
+                        }
+                        let changes = apply_directory_members(&state, &result.members);
+                        for change in &changes {
+                            log(&change.text);
+                            persist_peer_addr(&state, change.virtual_ip, &change.name, change.addr);
+                        }
+                        if !changes.is_empty() {
+                            refresh_domain_names(&state);
+                            send_gossip_burst(&state, &sock);
+                        }
+                        for _ in 0..SYNC_INTERVAL_SECS {
+                            if !running.load(Ordering::Relaxed) {
+                                return;
+                            }
+                            thread::sleep(Duration::from_secs(1));
+                        }
+                    }
+                });
+            }
+            Err(e) => log(&format!("Shared directory disabled: {e}")),
+        }
+    }
+
     log("Mesh is running.");
     log_peer_summary(&state);
 
@@ -2037,6 +2146,49 @@ mod tests {
             other => panic!("expected NameUpdated, got {other:?}"),
         }
         assert_eq!(state.get_peer(&peer_ip).unwrap().name(), "alice");
+    }
+
+    #[test]
+    fn directory_moves_are_applied_stale_entries_are_ignored_and_we_skip_ourselves() {
+        let state = test_state();
+        let alice: Ipv4Addr = "10.66.0.2".parse().unwrap();
+        state.learn_peer_from_ping(alice, "8.8.4.4:4000".parse().unwrap());
+        let now = now_secs();
+        let rec = |vip: Ipv4Addr, ip: &str, port: u16, updated_at: u64| PeerRecord {
+            name: "alice".into(),
+            virtual_ip: vip,
+            public_ip: ip.parse().unwrap(),
+            public_port: port,
+            updated_at,
+        };
+
+        // Alice moved: the directory carries her new endpoint.
+        let moved = state.my_virtual_ip; // our own record must be skipped
+        let changes = apply_directory_members(
+            &state,
+            &[rec(alice, "1.1.1.1", 7000, now + 10), rec(moved, "2.2.2.2", 1, now + 10)],
+        );
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0].addr, "1.1.1.1:7000".parse().unwrap());
+        assert_eq!(
+            state.get_peer(&alice).unwrap().current_send_addr(),
+            Some("1.1.1.1:7000".parse().unwrap())
+        );
+
+        // An older directory must not move her back to a previous address.
+        let stale = apply_directory_members(&state, &[rec(alice, "9.9.9.9", 1, now - 1000)]);
+        assert!(stale.is_empty());
+        assert_eq!(
+            state.get_peer(&alice).unwrap().current_send_addr(),
+            Some("1.1.1.1:7000".parse().unwrap())
+        );
+
+        // A member we have never seen joins our table straight away.
+        let bob: Ipv4Addr = "10.66.0.3".parse().unwrap();
+        let joined = apply_directory_members(&state, &[rec(bob, "3.3.3.3", 5000, now)]);
+        assert_eq!(joined.len(), 1);
+        assert!(joined[0].text.contains("joined"), "{}", joined[0].text);
+        assert!(state.get_peer(&bob).is_some());
     }
 
     #[test]
